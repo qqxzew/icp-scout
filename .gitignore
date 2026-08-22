@@ -220,3 +220,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data: bulk registry snapshots and the evidence archive.
+# Large and re-downloadable - never committed.
+data/

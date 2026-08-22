@@ -1,0 +1,498 @@
+:root {
+  --bg: #101010;
+  --ink: #f2f0ec;
+  --ink-dim: #8d8a85;
+  --ink-faint: #5e5b57;
+  --line: #232323;
+  --line-soft: #1c1c1c;
+  --surface: #171717;
+  --surface-hi: #1e1e1e;
+  --accent: #f2f0ec;
+  --warn: #c98a4b;
+  --ease: cubic-bezier(0.22, 0.61, 0.24, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* An explicit display value on a class beats the [hidden] default, so
+   say it once here rather than guarding every rule below. */
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Montserrat, system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.shell { width: 100%; max-width: 640px; }
+
+/* bar ---------------------------------------------------------------- */
+
+.bar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  padding: 0 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  transition: border-color 160ms var(--ease);
+}
+
+.bar:focus-within { border-color: #2e2e2e; }
+
+.query {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: 0.01em;
+  padding: 0 6px;
+}
+
+.query::placeholder { color: var(--ink-faint); }
+
+.gear, .run {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: color 160ms var(--ease), background 160ms var(--ease);
+}
+
+.gear svg, .run svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gear:hover, .run:hover { color: var(--ink); background: var(--surface-hi); }
+.gear[aria-expanded="true"] { color: var(--ink); }
+
+.gear[data-active="1"]::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.run { color: var(--ink-faint); }
+
+/* panel -------------------------------------------------------------- */
+
+.panel {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition:
+    max-height 260ms var(--ease),
+    opacity 130ms var(--ease),
+    margin-bottom 260ms var(--ease);
+
+  /* Opening the panel moves the bar, which means the pointer that just
+     clicked the gear ends up over a list row. Ignoring clicks until the
+     box has settled keeps that from registering as a selection. */
+  pointer-events: none;
+}
+
+.panel[data-open="1"] { opacity: 1; margin-bottom: 10px; }
+.panel[data-settled="1"] { pointer-events: auto; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.panel-title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-count {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.back {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: -6px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: color 140ms var(--ease), background 140ms var(--ease);
+}
+
+.back svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.back:hover { color: var(--ink); background: var(--surface-hi); }
+
+.panel-body {
+  max-height: 328px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transition: opacity 110ms var(--ease), transform 170ms var(--ease);
+}
+
+/* A view change moves in the direction it means: deeper leaves to the
+   left and arrives from the right, back does the reverse. */
+.panel-body[data-phase="leave"] { opacity: 0; }
+.panel-body[data-phase="enter"] { opacity: 0; }
+.panel-body[data-phase="in"] { opacity: 1; transform: none; }
+
+.panel-body[data-dir="forward"][data-phase="leave"] { transform: translateX(-10px); }
+.panel-body[data-dir="forward"][data-phase="enter"] { transform: translateX(12px); }
+.panel-body[data-dir="back"][data-phase="leave"] { transform: translateX(10px); }
+.panel-body[data-dir="back"][data-phase="enter"] { transform: translateX(-12px); }
+
+.panel-body::-webkit-scrollbar { width: 8px; }
+.panel-body::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
+.panel-body::-webkit-scrollbar-track { background: transparent; }
+
+/* rows --------------------------------------------------------------- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+
+.row:hover { background: var(--surface-hi); }
+
+.row-label { flex: 1; min-width: 0; }
+
+.row-name {
+  display: block;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+.row-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-open {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.row-open svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.row-open:hover { color: var(--ink); background: #262626; }
+
+/* A row with nothing to open still needs the width, or its count and
+   the one above it would not line up. */
+.row-open-spacer { flex: none; width: 20px; }
+
+.box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.box svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+
+.box[data-state="on"] { background: var(--accent); border-color: var(--accent); }
+.box[data-state="on"] svg { opacity: 1; }
+
+.box[data-state="some"] { border-color: var(--accent); }
+.box[data-state="some"]::after {
+  content: "";
+  width: 8px;
+  height: 1.5px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.group-head {
+  padding: 14px 16px 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.divider { height: 1px; background: var(--line-soft); margin: 6px 0; }
+
+/* custom radius ------------------------------------------------------ */
+
+.segmented {
+  display: flex;
+  gap: 3px;
+  margin: 10px 16px 6px;
+  padding: 3px;
+  background: #131313;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.seg-item {
+  flex: 1;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease);
+}
+
+.seg-item:hover { color: var(--ink-dim); }
+.seg-item[aria-pressed="true"] { background: var(--surface-hi); color: var(--ink); }
+.seg-item[aria-pressed="true"]:hover { color: var(--ink); }
+
+.field-set { padding: 6px 16px 18px; }
+
+.field { margin-top: 12px; }
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.field input {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  background: #131313;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: 0;
+  transition: border-color 140ms var(--ease);
+}
+
+.field input:focus { border-color: #333; }
+.field input::placeholder { color: var(--ink-faint); }
+
+/* Suggestions sit in the flow under the input rather than floating над
+   it: the panel already animates its own height, so growing the list
+   costs nothing and never clips inside the scroll area. */
+.suggest:not(:empty) {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.suggest-item {
+  display: block;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: #131313;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 110ms var(--ease);
+}
+
+.suggest-item:last-child { border-bottom: 0; }
+.suggest-item:hover { background: var(--surface-hi); }
+
+/* footer ------------------------------------------------------------- */
+
+/* The footer used to vanish via [hidden] (display:none), which cannot
+   transition - the button popped out instantly while the panel box
+   shrank around it a moment later. Animating its own box height keeps
+   the two in step, so the row and the box settle together. */
+/* No transition of its own: the panel is what animates, and because the
+   panel clips its overflow the footer is revealed by that growth. When
+   the footer animated its own max-height too, sizePanel() measured it
+   mid-flight and the panel came out too short - the buttons showed up
+   half-height on the first click and only settled on the second. */
+.panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Sits between the two corner buttons - space-between still pins them
+   to the edges even when this is empty and contributes no width. */
+.discard {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--warn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cancel, .save {
+  flex: none;
+  height: 34px;
+  padding: 0 22px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.cancel {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-dim);
+  transition: color 140ms var(--ease), border-color 140ms var(--ease), background 140ms var(--ease);
+}
+
+.cancel:hover { color: var(--ink); border-color: #3a3a3a; background: var(--surface-hi); }
+
+/* The button is only in the DOM's meaningful state when there is
+   something to save - no disabled variant needed, presence is the state. */
+.save {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  transition: opacity 140ms var(--ease);
+}
+
+.save:hover { opacity: 0.86; }
+
+/* summary ------------------------------------------------------------ */
+
+.summary {
+  margin-top: 14px;
+  padding: 0 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  letter-spacing: 0.01em;
+  min-height: 19px;
+}
+
+.summary b { color: var(--ink-dim); font-weight: 500; }

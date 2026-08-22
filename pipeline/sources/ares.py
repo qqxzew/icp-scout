@@ -20,6 +20,7 @@ Run manually:
 
 import sys
 import json
+import time
 
 import requests
 
@@ -29,6 +30,15 @@ from pipeline.sources.codebooks import LEGAL_FORMS, decode_employee_category
 
 BASE_URL = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest"
 TIMEOUT = 10  # seconds
+
+# ARES rate-limits a burst of requests by answering 403 with an HTML
+# block page instead of JSON. Measured on a run of 3299 companies with
+# 10 threads: 23 failures, all of them inside the first ~300 requests,
+# none in the remaining ~3000. So it lets go on its own - worth waiting
+# out rather than losing the company.
+MAX_ATTEMPTS = 4
+BACKOFF = 2  # seconds, doubled on every further attempt
+RETRY_STATUSES = (403, 429, 500, 502, 503, 504)
 
 
 def fetch(endpoint, ico):
@@ -41,16 +51,30 @@ def fetch(endpoint, ico):
     so only genuine failures raise.
     """
     url = f"{BASE_URL}/{endpoint}/{ico}"
-    response = requests.get(url, timeout=TIMEOUT)
 
-    if response.status_code == 404:
-        return None
-    if response.status_code != 200:
+    for attempt in range(MAX_ATTEMPTS):
+        response = requests.get(url, timeout=TIMEOUT)
+
+        if response.status_code == 404:
+            return None
+        if response.status_code == 200:
+            return response.json()
+
+        if response.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS - 1:
+            delay = BACKOFF * (2 ** attempt)
+            print(
+                f"ares: HTTP {response.status_code} for {endpoint}/{ico}, "
+                f"retry {attempt + 1}/{MAX_ATTEMPTS - 1} in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
+
         raise RuntimeError(
             f"ARES {endpoint}/{ico}: HTTP {response.status_code} - {response.text[:200]}"
         )
 
-    return response.json()
+    raise RuntimeError(f"ARES {endpoint}/{ico}: still failing after {MAX_ATTEMPTS} attempts")
 
 
 def full_name(person):
@@ -73,12 +97,31 @@ def first_record(data):
 
     Returns the primary record, or None when the payload is missing
     or carries no records at all.
+
+    Taking zaznamy[0] is wrong: a company that was re-registered keeps
+    its old entries in the same list, and they can come first. Checked
+    live on 00543551 - three records, the first two are HISTORICKY
+    (deleted in 1991), the active one is third. The register marks the
+    current one with primarniZaznam, so that is what decides.
     """
     if data is None:
         return None
 
     records = data.get("zaznamy") or []
-    return records[0] if records else None
+    if not records:
+        return None
+
+    for record in records:
+        if record.get("primarniZaznam"):
+            return record
+
+    # No record flagged as primary: fall back to the first one, but say
+    # so - it means this endpoint broke its own convention.
+    print(
+        f"ares: no primarniZaznam among {len(records)} records, using the first",
+        file=sys.stderr,
+    )
+    return records[0]
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +144,7 @@ def parse_summary(data):
             "insolvent": None,
             "file_number": None,
             "address_code": None,
+            "established": None,
             "updated": None,
         }
 
@@ -131,6 +175,10 @@ def parse_summary(data):
         "insolvent": insolvency_state == "AKTIVNI" if insolvency_state else None,
         "file_number": file_number,
         "address_code": sidlo.get("kodAdresnihoMista"),
+        # Needed to read the director dates correctly: a company founded
+        # last year has an all-new board because it is new, not because
+        # anyone was replaced. Without this the two look identical.
+        "established": data.get("datumVzniku"),
         "updated": data.get("datumAktualizace"),
     }
 
