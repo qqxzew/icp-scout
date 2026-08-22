@@ -1,0 +1,734 @@
+"""Website resolver: from an ICO to the company's own site, proven.
+
+No register publishes a company's website. RES has 25 columns and none
+of them is a URL; ARES returns no contact data at all (checked live).
+So the address has to be found and then *proved to belong to that
+company* - and the second half is the whole difficulty.
+
+Measured on 200 ICP-matching companies before this module was written:
+of the domains guessed from a business name that turn out to be live
+websites, 46 % belong to somebody else. A resolver that guesses and
+scrapes would therefore feed another company's text into the card
+almost half the time, with nothing to notice it by - the wrong site is
+live, Czech, and about manufacturing too.
+
+Hence the design: candidates are cheap and generated generously, and
+every one of them must earn its place by evidence found in the page.
+
+    ico       the company's ICO is printed on the site        -> proof
+    dic       its VAT number (CZ + ICO) is printed            -> proof
+    name_city business name AND registered town both present  -> strong
+    name      business name only                              -> weak
+    none      nothing tied the site to this company           -> rejected
+
+The two proof tiers are facts: the ICO is a register key, a site
+carrying it is making a legal statement about who it belongs to. The
+other two are inferences and are reported as such, never merged into
+the proven bucket - that would be the exact failure this project is
+built against.
+
+Cost control, in the order it matters:
+
+* DNS before HTTP. 60 % of generated candidates do not resolve at all.
+  A getaddrinfo costs ~10 ms, a dead TCP connect costs the full timeout.
+  Gating on DNS is what makes it affordable to try twenty spellings of
+  a name instead of three.
+* Contact links are read off the homepage, never guessed as paths.
+  Guessing /kontakt found 39.5 % of sites; following the actual link
+  found 44.5 % on the same sample. Czech sites do not agree on a path.
+
+Run:
+    python -m pipeline.sources.website 29092540 "RTsoft s.r.o."
+    python -m pipeline.sources.website --all      # every candidate on file
+"""
+
+import argparse
+import json
+import re
+import socket
+import sys
+import threading
+import unicodedata
+import urllib.robotparser
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+import requests
+
+CANDIDATES = Path("data/raw/ares_candidates.jsonl")
+OUTPUT = Path("data/raw/websites.jsonl")
+
+TIMEOUT = 10
+USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
+
+# How far to go per company. Generation is nearly free, DNS is cheap,
+# HTTP is not - so the funnel narrows hard at the last step.
+MAX_CANDIDATES = 24   # spellings generated
+MAX_LIVE = 6          # of those, how many that resolve get fetched
+MAX_PAGES = 6         # pages read per site: homepage + contact links
+
+# Legal-form suffixes. Stripped before a name becomes a domain, and the
+# expression is anchored so it only bites at the end of the name.
+SUFFIX = re.compile(
+    r"[\s,]*(akciov[aá]\s+spole[cč]nost|spole[cč]nost\s+s\s+ru[cč]en[ií]m\s+omezen[yý]m|"
+    r"a\.?\s?s\.?|s\.?\s?r\.?\s?o\.?|spol\.?|v\.?\s?o\.?\s?s\.?|k\.?\s?s\.?|"
+    r"z\.?\s?[su]\.?|o\.?\s?p\.?\s?s\.?|s\.?\s?e\.?|gmbh|ltd\.?|s\.?a\.?)"
+    r"[\s.,]*$",
+    re.IGNORECASE,
+)
+
+# Legal-form debris once the name has been split into words. The suffix
+# expression above only bites at the end, but Czech names carry the form
+# in the middle too - "ČSAD, s.r.o. Rychnov n. Kn." - and leaving it in
+# produces csadsrorychnovnkn.cz, which exists nowhere.
+LEGAL_TOKENS = {
+    "s", "r", "o", "sro", "spol", "as", "a.s", "vos", "ks", "zs", "ops",
+    "se", "spolecnost", "spolecnosti", "akciova", "gmbh", "ltd", "sa",
+    "kg", "ag", "bv", "nv", "plc", "inc", "llc",
+}
+
+# Tokens that carry no identity on their own. Dropping them produces a
+# second, shorter stem - "VINAMET CZ" also lives at vinamet.cz. Both
+# spellings are generated; this list only decides what else to try, so a
+# wrong entry here costs one DNS lookup, never a wrong answer.
+FILLER = {
+    "cz", "czech", "czechia", "bohemia", "moravia", "morava", "group",
+    "holding", "company", "int", "international", "trade", "trading",
+    "industry", "industries", "invest", "praha", "brno", "prague",
+    "and", "the", "republic",
+}
+
+# Parking and placeholder pages: a domain that answers but is not a site.
+# Treated as dead rather than as a mismatch - there is nothing there to
+# have been wrong about.
+PARKED = re.compile(
+    r"doména\s+je\s+na\s+prodej|tato\s+doména|domain\s+(is\s+)?for\s+sale|"
+    r"připravujeme|stránky\s+se\s+připravují|under\s+construction|"
+    r"default\s+web\s+page|it\s+works!|welcome\s+to\s+nginx|apache2?\s+default",
+    re.IGNORECASE,
+)
+
+# Anchor text and hrefs that lead to the page carrying the ICO.
+CONTACT_HINT = re.compile(
+    r"kontakt|contact|o-?n[aá]s|o[-_]?firme|o[-_]?spole[cč]nosti|about|"
+    r"impressum|imprint|firemn[ií]|[uú]daje|z[aá]pat[ií]|footer",
+    re.IGNORECASE,
+)
+
+LINK = re.compile(r'(?is)<a\b[^>]*href="([^"#]*)"[^>]*>(.*?)</a>')
+SCRIPTS = re.compile(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>")
+MARKUP = re.compile(r"(?s)<[^>]+>")
+META_CHARSET = re.compile(
+    rb'(?is)<meta[^>]+charset=["\']?\s*([\w-]+)|<meta[^>]+content=["\'][^"\']*charset=([\w-]+)'
+)
+
+
+# ---------------------------------------------------------------------------
+# Text handling
+# ---------------------------------------------------------------------------
+
+
+def decode(body):
+    """Decode a page body, honouring the charset it declares.
+
+    Czech SME sites are old enough that windows-1250 and iso-8859-2 are
+    still common, and requests' own fallback for text/* is latin-1,
+    which turns every diacritic into a different character. That breaks
+    name matching silently - the page looks fine, the comparison fails.
+    """
+    match = META_CHARSET.search(body[:4096])
+    if match:
+        declared = (match.group(1) or match.group(2) or b"").decode("ascii", "ignore")
+        if declared:
+            try:
+                return body.decode(declared, "replace")
+            except LookupError:
+                pass  # a charset nobody has heard of; fall through
+
+    for encoding in ("utf-8", "windows-1250", "iso-8859-2"):
+        try:
+            return body.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return body.decode("utf-8", "replace")
+
+
+def to_text(html):
+    """Visible text of a page, whitespace collapsed.
+
+    The same normalisation sbirka.py applies, and for the same reason:
+    every later step - including quote verification - has to see one
+    shape of text, or a quote taken here will not be found there.
+    """
+    return re.sub(r"\s+", " ", MARKUP.sub(" ", SCRIPTS.sub(" ", html))).strip()
+
+
+def fold(text):
+    """Lowercase, diacritics removed - for comparing names."""
+    stripped = "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if unicodedata.category(ch) != "Mn"
+    )
+    return stripped.lower()
+
+
+# ---------------------------------------------------------------------------
+# Candidate generation - pure, no network
+# ---------------------------------------------------------------------------
+
+
+def stems(name):
+    """Domain stems worth trying for a business name, best first.
+
+    A stem is the part before the dot. Generating several is the point:
+    "CHARVÁT AXL, a.s." lives at charvat-axl.cz, and the shortest guess
+    (axl.cz) is somebody else's affiliate programme - so both have to be
+    tried and the evidence check has to settle it.
+    """
+    base = SUFFIX.sub("", name).strip()
+    base = fold(base)
+    # Keep digits: "3 P" is a real company and 3p.cz is its site.
+    base = re.sub(r"[^a-z0-9]+", " ", base).strip()
+
+    words = [w for w in base.split() if w and w not in LEGAL_TOKENS]
+    if not words:
+        # A name that is nothing but legal form - fall back to the raw
+        # split rather than returning nothing at all.
+        words = [w for w in base.split() if w]
+    if not words:
+        return []
+
+    meaningful = [w for w in words if w not in FILLER] or words
+
+    ordered = []
+
+    def add(*parts):
+        for value in parts:
+            if value and value not in ordered and 2 <= len(value) <= 63:
+                ordered.append(value)
+
+    add("".join(words), "-".join(words))
+    if meaningful != words:
+        add("".join(meaningful), "-".join(meaningful))
+    if len(meaningful) > 2:
+        add("".join(meaningful[:2]), "-".join(meaningful[:2]))
+    if len(meaningful) > 1:
+        add(meaningful[0])
+        # An acronym is how long descriptive names usually shorten:
+        # "AKORD - stavební a obchodní společnost" is not akordstavebni.
+        initials = "".join(w[0] for w in meaningful if w)
+        if len(initials) >= 3:
+            add(initials)
+    return ordered
+
+
+def candidates(name, seed_domains=()):
+    """Full ranked candidate list: seeds first, then generated spellings.
+
+    Seeds are domains lifted from a document the company itself filed -
+    the contact e-mail on its MPSV vacancy. They rank above anything
+    invented here, but they are not trusted either: 22 % of them turned
+    out to be an agency's or a parent group's domain, so they go through
+    the same evidence check as a guess.
+    """
+    out = []
+
+    def add(domain):
+        domain = domain.strip().lower().lstrip(".")
+        domain = re.sub(r"^www\.", "", domain)
+        if domain and domain not in out and "." in domain:
+            out.append(domain)
+
+    for domain in seed_domains:
+        add(domain)
+
+    parts = stems(name)
+    for stem in parts:
+        add(f"{stem}.cz")
+    # .com and .eu only for the strongest stems: foreign-owned Czech
+    # subsidiaries ("CIKAUTXO CZ", "Hengst Air Filtration Czech
+    # Republic") sit on the group domain, and there is no .cz at all.
+    for stem in parts[:3]:
+        add(f"{stem}.com")
+        add(f"{stem}.eu")
+
+    return out[:MAX_CANDIDATES]
+
+
+# ---------------------------------------------------------------------------
+# Cheap gate: does the name resolve at all
+# ---------------------------------------------------------------------------
+
+
+def resolves(domain):
+    """True when the domain has an A/AAAA record, under either form.
+
+    This is the single biggest cost lever in the module. Six in ten
+    generated candidates do not exist; asking DNS costs milliseconds,
+    while letting a dead host reach a TCP connect costs the full
+    timeout. Everything downstream only sees names that exist.
+    """
+    for host in (domain, f"www.{domain}"):
+        try:
+            socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+            return True
+        except socket.gaierror:
+            continue
+        except Exception:
+            return True  # resolver trouble is not evidence of absence
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
+
+
+class Fetcher:
+    """HTTP access with a per-host robots.txt cache, safe to share.
+
+    robots is honoured because the prototype has to be defensible, not
+    because the sites would notice: the whole run reads at most six
+    pages per company. Fetching it costs one request per live host,
+    which the DNS gate has already made rare.
+
+    One instance is shared by every worker so that the robots cache is
+    shared too, but a requests.Session is not thread-safe - so the
+    session itself is thread-local and the cache is a plain dict, whose
+    get and set are atomic. Worst case two threads fetch the same
+    robots.txt once each; there is nothing to corrupt.
+    """
+
+    def __init__(self, respect_robots=True):
+        self.respect_robots = respect_robots
+        self._robots = {}
+        self._local = threading.local()
+
+    @property
+    def session(self):
+        if not hasattr(self._local, "session"):
+            session = requests.Session()
+            session.headers["User-Agent"] = USER_AGENT
+            self._local.session = session
+        return self._local.session
+
+    def allowed(self, url):
+        if not self.respect_robots:
+            return True
+
+        parts = urlparse(url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+
+        if origin not in self._robots:
+            parser = urllib.robotparser.RobotFileParser()
+            try:
+                response = self.session.get(
+                    f"{origin}/robots.txt", timeout=TIMEOUT, allow_redirects=True
+                )
+                if response.status_code == 200:
+                    parser.parse(decode(response.content).splitlines())
+                else:
+                    parser = None  # no robots.txt means no restriction
+            except requests.RequestException:
+                parser = None
+            self._robots[origin] = parser
+
+        parser = self._robots[origin]
+        return True if parser is None else parser.can_fetch(USER_AGENT, url)
+
+    def get(self, url):
+        """Return (html, final_url), or (None, None) when unreachable."""
+        if not self.allowed(url):
+            return None, None
+        try:
+            response = self.session.get(url, timeout=TIMEOUT, allow_redirects=True)
+        except requests.RequestException:
+            return None, None
+        if response.status_code >= 400 or not response.content:
+            return None, None
+        return decode(response.content), response.url
+
+
+# The page that actually carries the ICO is the contact page, not any
+# page that happens to sit under /o-nas/. Scored rather than taken in
+# document order: on promareha.cz the /o-nas/ prefix matched four links
+# in a row - kariera, ke-stazeni and two duplicates of o-spolecnosti -
+# and pushed the real /kontakty out of the budget, turning a proof into
+# a guess.
+STRONG_SEGMENT = re.compile(r"^(kontakt|kontakty|contact|contacts|impressum|imprint)$", re.I)
+CONTACT_WORD = re.compile(r"kontakt|contact|impressum|imprint", re.I)
+LANGUAGE_PREFIX = re.compile(r"^(cs|cz|en|de|sk|pl|ru|fr|it|es)$", re.I)
+
+
+def rank_link(url, label):
+    """How likely this link leads to the page carrying the ICO."""
+    segments = [s for s in urlparse(url).path.split("/") if s]
+    last = segments[-1].rsplit(".", 1)[0] if segments else ""
+
+    if STRONG_SEGMENT.match(last):
+        return 3
+    if CONTACT_WORD.search(last) or CONTACT_WORD.search(label):
+        return 2
+    return 1
+
+
+def contact_links(html, base_url, limit=MAX_PAGES - 1):
+    """Contact-ish links from a page, best first, as same-site URLs.
+
+    Same-site only, and deliberately so: an "Impressum" on a Czech
+    subsidiary's page often points at the German parent, whose ICO is a
+    different company's - following it would prove the wrong thing.
+    """
+    host = urlparse(base_url).netloc.lower().replace("www.", "")
+    scored, seen = [], set()
+
+    for href, anchor in LINK.findall(html):
+        label = MARKUP.sub(" ", anchor).strip()
+        if not (CONTACT_HINT.search(href) or CONTACT_HINT.search(label)):
+            continue
+
+        url = urljoin(base_url, href.strip())
+        parts = urlparse(url)
+        if parts.scheme not in ("http", "https"):
+            continue
+        if parts.netloc.lower().replace("www.", "") != host:
+            continue
+
+        # Multilingual sites repeat the same page under /cs/, /en/ and
+        # bare, so the language prefix is dropped before comparing. The
+        # rest of the path has to stay: pmb-zos.cz has both
+        # /strojirenska-vyroba/kontakty/ and /home/kontakty/, and only
+        # the second carries the ICO - keying on the last segment alone
+        # threw the proof away.
+        segments = [s for s in parts.path.split("/") if s]
+        if segments and LANGUAGE_PREFIX.match(segments[0]):
+            segments = segments[1:]
+        key = fold("/".join(segments))
+        if url in seen or key in seen:
+            continue
+        seen.add(url)
+        seen.add(key)
+
+        scored.append((rank_link(url, label), -len(parts.path), url))
+
+    scored.sort(reverse=True)
+    return [url for _, _, url in scored[:limit]]
+
+
+# ---------------------------------------------------------------------------
+# Evidence - pure functions over already-fetched text
+# ---------------------------------------------------------------------------
+
+
+NUMBER_RUN = re.compile(r"\d[\d\s .]{6,12}\d")
+
+
+def find_ico(text, ico):
+    """Locate the ICO on the page and return the surrounding quote.
+
+    The register form is zero-padded to eight digits, printed forms drop
+    the leading zero and often group the digits ("255 09 900"), so the
+    comparison is made on digits only. A quote is returned rather than a
+    boolean: it is the evidence, and the same string has to survive into
+    the archive for verify.py to find later.
+    """
+    bare = ico.lstrip("0")
+    for match in NUMBER_RUN.finditer(text):
+        digits = re.sub(r"\D", "", match.group())
+        if digits in (ico, bare):
+            start = max(0, match.start() - 60)
+            end = min(len(text), match.end() + 60)
+            return text[start:end].strip()
+    return None
+
+
+def find_dic(text, ico):
+    """Locate the VAT number, which for a Czech company is CZ + ICO.
+
+    Some sites print only the DIC. It is the same registration behind a
+    prefix, so it proves the same thing.
+    """
+    bare = ico.lstrip("0")
+    for match in re.finditer(r"(?i)CZ\s?(\d[\d\s ]{6,11})", text):
+        digits = re.sub(r"\D", "", match.group(1))
+        if digits in (ico, bare):
+            start = max(0, match.start() - 60)
+            end = min(len(text), match.end() + 60)
+            return text[start:end].strip()
+    return None
+
+
+def find_name(text, name):
+    """The longest form of the business name present on the page, or None.
+
+    Compared folded and with separators removed, so "PMB-ZOS s.r.o."
+    matches "PMB ZOS", "pmb-zos" and "PMBZOS" alike.
+
+    Shortened forms have to be accepted too, and this is not laziness:
+    "CIKAUTXO CZ s.r.o." is a Czech subsidiary whose site says CIKAUTXO
+    GROUP and nothing else, so demanding the registered name in full
+    rejects the company's actual website. Shorter stems are only tried
+    once the full one fails, longest first, and never below four
+    characters - "3p" would match half the internet.
+    """
+    squeezed = re.sub(r"[^a-z0-9]+", "", fold(text))
+
+    forms = [re.sub(r"[^a-z0-9]+", "", fold(SUFFIX.sub("", name)))]
+    forms += [stem.replace("-", "") for stem in stems(name)]
+
+    for form in sorted(set(f for f in forms if f), key=len, reverse=True):
+        if len(form) < 4:
+            continue
+        if form in squeezed:
+            return form
+    return None
+
+
+def find_city(text, city):
+    """Whether the registered town appears on the page.
+
+    On its own this is worth nothing - half of Czech firms mention
+    Praha. It is only ever used to strengthen a name match, never alone.
+    """
+    if not city or len(city) < 3:
+        return False
+    return fold(city) in fold(text)
+
+
+def looks_parked(text):
+    return bool(PARKED.search(text[:2000])) or len(text) < 200
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def inspect(fetcher, domain, ico, name, city):
+    """Read one candidate site and grade the evidence it carries.
+
+    Returns None when the domain is not usable at all, otherwise a dict
+    with the strongest evidence found.
+    """
+    html = final = None
+    for url in (f"https://{domain}", f"http://{domain}"):
+        html, final = fetcher.get(url)
+        if html:
+            break
+    if not html:
+        return None
+
+    pages = [(final, html)]
+
+    links = contact_links(html, final)
+    # A site whose navigation is built by JavaScript hands us a homepage
+    # with no usable links at all. Two guessed paths are a cheap last
+    # resort - as a fallback only, never as the primary strategy.
+    if not links:
+        root = f"{urlparse(final).scheme}://{urlparse(final).netloc}"
+        links = [f"{root}/kontakt", f"{root}/kontakty"]
+
+    for url in links:
+        body, resolved = fetcher.get(url)
+        if body:
+            pages.append((resolved, body))
+
+    if all(looks_parked(to_text(body)) for _, body in pages):
+        return None
+
+    weak = None
+    for url, body in pages:
+        text = to_text(body)
+
+        quote = find_ico(text, ico)
+        if quote:
+            return {"domain": domain, "url": url, "evidence": "ico", "quote": quote,
+                    "pages_read": len(pages)}
+
+        quote = find_dic(text, ico)
+        if quote:
+            return {"domain": domain, "url": url, "evidence": "dic", "quote": quote,
+                    "pages_read": len(pages)}
+
+        # An inference is remembered but never returned early: a later
+        # page on the same site may still carry the ICO and settle it.
+        matched = find_name(text, name)
+        if weak is None and matched:
+            level = "name_city" if find_city(text, city) else "name"
+            weak = {"domain": domain, "url": url, "evidence": level, "quote": None,
+                    "matched": matched, "pages_read": len(pages)}
+
+    return weak
+
+
+def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=True):
+    """Find and prove the website of one company.
+
+    Always returns a dict carrying `status`:
+
+        proven     evidence is `ico` or `dic` - a register key on the page
+        probable   evidence is `name_city` or `name` - an inference
+        not_found  candidates existed, none could be tied to the company
+        no_lead    nothing even resolved in DNS
+
+    The caller must keep the two success states apart. A `probable`
+    site may be used to read about the company, but nothing taken from
+    it can be presented to the salesperson as a fact about *this* ICO.
+    """
+    ico = str(ico).strip().zfill(8)
+    fetcher = fetcher or Fetcher(respect_robots=respect_robots)
+
+    result = {
+        "ico": ico,
+        "name": name,
+        "status": None,
+        "domain": None,
+        "url": None,
+        "evidence": None,
+        "quote": None,
+        "matched": None,
+        "candidates": 0,
+        "live": 0,
+        "checked": [],
+        "retrieved_at": date.today().isoformat(),
+    }
+
+    tried = candidates(name, seed_domains)
+    result["candidates"] = len(tried)
+
+    live = [domain for domain in tried if resolves(domain)][:MAX_LIVE]
+    result["live"] = len(live)
+    if not live:
+        result["status"] = "no_lead"
+        return result
+
+    best = None
+    for domain in live:
+        found = inspect(fetcher, domain, ico, name, city)
+        result["checked"].append({
+            "domain": domain,
+            "outcome": found["evidence"] if found else "no_match",
+        })
+
+        if found and found["evidence"] in ("ico", "dic"):
+            result.update({k: found.get(k) for k in
+                           ("domain", "url", "evidence", "quote", "matched")})
+            result["status"] = "proven"
+            return result
+
+        # Rank inferences: a name plus the registered town beats a bare
+        # name, and neither ever outranks a proof.
+        if found and (best is None or found["evidence"] == "name_city"):
+            best = found
+
+    if best:
+        result.update({k: best.get(k) for k in
+                       ("domain", "url", "evidence", "quote", "matched")})
+        result["status"] = "probable"
+    else:
+        result["status"] = "not_found"
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Batch run
+# ---------------------------------------------------------------------------
+
+
+def load_seeds(path):
+    """ICO -> mail domains, from whatever the MPSV probe left on disk."""
+    if not path or not Path(path).exists():
+        return {}
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = payload["sample"] if isinstance(payload, dict) else payload
+    return {row["ico"]: row.get("mpsv_domains", []) for row in rows}
+
+
+def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
+    """Resolve every candidate on file, appending as it goes.
+
+    Appends rather than collecting: a run over 3299 companies takes long
+    enough that losing it to one exception would be its own bug. Already
+    resolved ICOs are skipped, so the run resumes.
+    """
+    done = set()
+    if OUTPUT.exists():
+        with open(OUTPUT, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    done.add(json.loads(line)["ico"])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        print(f"resuming: {len(done)} already done", file=sys.stderr)
+
+    seeds = load_seeds(seeds_path)
+
+    companies = []
+    with open(CANDIDATES, encoding="utf-8") as handle:
+        for line in handle:
+            record = json.loads(line)
+            if record["ico"] in done or not record.get("name"):
+                continue
+            companies.append(record)
+    if limit:
+        companies = companies[:limit]
+
+    print(f"resolving {len(companies)} companies with {workers} workers", file=sys.stderr)
+
+    # One shared Fetcher: its session is thread-local, its robots cache
+    # is not, which is exactly the split we want.
+    fetcher = Fetcher(respect_robots=respect_robots)
+
+    def work(record):
+        try:
+            return resolve(
+                record["ico"], record["name"], record.get("city"),
+                seeds.get(record["ico"], []), fetcher=fetcher,
+            )
+        except Exception as error:  # one bad site must not end the run
+            return {"ico": record["ico"], "name": record["name"],
+                    "status": "error", "reason": f"{type(error).__name__}: {error}",
+                    "retrieved_at": date.today().isoformat()}
+
+    tally = {}
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT, "a", encoding="utf-8") as sink:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, result in enumerate(pool.map(work, companies), 1):
+                sink.write(json.dumps(result, ensure_ascii=False) + "\n")
+                sink.flush()
+                tally[result["status"]] = tally.get(result["status"], 0) + 1
+                if index % 50 == 0:
+                    print(f"  {index}/{len(companies)}  {tally}", file=sys.stderr)
+
+    total = sum(tally.values()) or 1
+    print("\nfinished:", file=sys.stderr)
+    for status in ("proven", "probable", "not_found", "no_lead", "error"):
+        count = tally.get(status, 0)
+        print(f"  {status:10} {count:5}  {count / total * 100:5.1f} %", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Resolve company websites from an ICO.")
+    parser.add_argument("ico", nargs="?", help="single ICO to resolve")
+    parser.add_argument("name", nargs="?", help="business name for that ICO")
+    parser.add_argument("--city", help="registered town, strengthens a name match")
+    parser.add_argument("--all", action="store_true", help="run over ares_candidates.jsonl")
+    parser.add_argument("--limit", type=int, help="stop after N companies")
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--seeds", default="data/raw/url_probe_sample.json",
+                        help="JSON with mpsv_domains per ICO")
+    parser.add_argument("--ignore-robots", action="store_true")
+    args = parser.parse_args()
+
+    if args.all:
+        run_all(args.limit, args.workers, args.seeds, not args.ignore_robots)
+    elif args.ico and args.name:
+        print(json.dumps(
+            resolve(args.ico, args.name, args.city, respect_robots=not args.ignore_robots),
+            ensure_ascii=False, indent=2,
+        ))
+    else:
+        parser.error("give an ICO and a name, or --all")
