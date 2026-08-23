@@ -15,17 +15,24 @@ live, Czech, and about manufacturing too.
 Hence the design: candidates are cheap and generated generously, and
 every one of them must earn its place by evidence found in the page.
 
-    ico       the company's ICO is printed on the site        -> proof
-    dic       its VAT number (CZ + ICO) is printed            -> proof
-    name_city business name AND registered town both present  -> strong
-    name      business name only                              -> weak
-    none      nothing tied the site to this company           -> rejected
+    ico           the company's ICO is printed on the site       -> proof
+    dic           its VAT number (CZ + ICO) is printed           -> proof
+    whois_org     CZ.NIC says the company owns the domain        -> proof
+    whois_person  the registrant sits on this company's board    -> proof
+    name_city     business name AND registered town on the page  -> strong
+    name          business name only                             -> weak
+    whois_postcode  right postcode, wrong owner name             -> weak
+    none          nothing tied the site to this company          -> rejected
 
-The two proof tiers are facts: the ICO is a register key, a site
-carrying it is making a legal statement about who it belongs to. The
-other two are inferences and are reported as such, never merged into
-the proven bucket - that would be the exact failure this project is
-built against.
+The proof tiers are facts, and each is a statement held in a registry:
+the ICO on a page, or the owner recorded at CZ.NIC. The rest are
+inferences and are reported as such, never merged into the proven
+bucket - that would be the exact failure this project is built against.
+
+There are two passes because the two sources behave differently:
+
+    --all     HTTP, ten workers, reads pages       ~54 companies/min
+    --whois   port 43, strictly serial             ~47 domains/min
 
 Cost control, in the order it matters:
 
@@ -36,18 +43,23 @@ Cost control, in the order it matters:
 * Contact links are read off the homepage, never guessed as paths.
   Guessing /kontakt found 39.5 % of sites; following the actual link
   found 44.5 % on the same sample. Czech sites do not agree on a path.
+* The registry pass runs only on what HTTP failed to prove, which is
+  about half - and it is the slow one, so that ordering matters.
 
 Run:
     python -m pipeline.sources.website 29092540 "RTsoft s.r.o."
     python -m pipeline.sources.website --all      # every candidate on file
+    python -m pipeline.sources.website --whois    # then prove the rest
 """
 
 import argparse
 import json
 import re
 import socket
+import sqlite3
 import sys
 import threading
+import time
 import unicodedata
 import urllib.robotparser
 from concurrent.futures import ThreadPoolExecutor
@@ -68,6 +80,13 @@ USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
 MAX_CANDIDATES = 24   # spellings generated
 MAX_LIVE = 6          # of those, how many that resolve get fetched
 MAX_PAGES = 6         # pages read per site: homepage + contact links
+
+# Hard ceilings on one response. `timeout` above only limits the gap
+# between two packets, so a server that trickles bytes indefinitely
+# never trips it - that is what stopped the first full run dead at 365
+# of 3294 with every worker still alive. These two cut it off.
+MAX_BYTES = 1_500_000   # a company homepage is nowhere near this
+MAX_TRANSFER = 20       # seconds for the whole body
 
 # Legal-form suffixes. Stripped before a name becomes a domain, and the
 # expression is anchored so it only bites at the end of the name.
@@ -339,16 +358,41 @@ class Fetcher:
         return True if parser is None else parser.can_fetch(USER_AGENT, url)
 
     def get(self, url):
-        """Return (html, final_url), or (None, None) when unreachable."""
+        """Return (html, final_url), or (None, None) when unreachable.
+
+        The body is read in bounded chunks rather than through
+        response.content, and this is not an optimisation. The `timeout`
+        argument of requests caps the wait *between* bytes, not the whole
+        transfer: a server that dribbles one byte per second keeps the
+        worker forever and never raises. Seen on the full run - the
+        counter stopped at 365 of 3294 with every worker still alive.
+        """
         if not self.allowed(url):
             return None, None
         try:
-            response = self.session.get(url, timeout=TIMEOUT, allow_redirects=True)
+            response = self.session.get(
+                url, timeout=TIMEOUT, allow_redirects=True, stream=True
+            )
+            if response.status_code >= 400:
+                return None, None
+
+            deadline = time.monotonic() + MAX_TRANSFER
+            body = bytearray()
+            for chunk in response.iter_content(65536):
+                body += chunk
+                if len(body) >= MAX_BYTES or time.monotonic() > deadline:
+                    break
         except requests.RequestException:
             return None, None
-        if response.status_code >= 400 or not response.content:
+        finally:
+            try:
+                response.close()
+            except (NameError, UnboundLocalError):
+                pass
+
+        if not body:
             return None, None
-        return decode(response.content), response.url
+        return decode(bytes(body)), response.url
 
 
 # The page that actually carries the ICO is the contact page, not any
@@ -637,13 +681,51 @@ def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=
 # ---------------------------------------------------------------------------
 
 
-def load_seeds(path):
-    """ICO -> mail domains, from whatever the MPSV probe left on disk."""
-    if not path or not Path(path).exists():
-        return {}
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    rows = payload["sample"] if isinstance(payload, dict) else payload
-    return {row["ico"]: row.get("mpsv_domains", []) for row in rows}
+# Applicant-tracking and job-board hosts. They turn up as the "company"
+# domain in a vacancy because that is where the advert lives, but they
+# are the recruiter's site, not the employer's.
+NOT_A_COMPANY = {
+    "teamio.net", "teamio.com", "jobs.cz", "prace.cz", "lmc.eu",
+    "startupjobs.cz", "welcometothejungle.com", "profesia.cz",
+    "indeed.com", "linkedin.com", "facebook.com", "seznam.cz",
+    "uradprace.cz", "mpsv.cz", "google.com", "youtube.com",
+}
+
+
+def load_seeds(*paths):
+    """ICO -> candidate domains gathered from the free sources.
+
+    Two shapes are accepted because two different probes wrote them: a
+    list of rows carrying `mpsv_domains`, and a plain {ico: [urls]} map
+    scraped out of the free text of vacancy adverts.
+    """
+    seeds = {}
+
+    def add(ico, domains):
+        for domain in domains or []:
+            domain = re.sub(r"^www\.", "", str(domain).strip().lower())
+            if not domain or "." not in domain or domain in NOT_A_COMPANY:
+                continue
+            seeds.setdefault(ico, [])
+            if domain not in seeds[ico]:
+                seeds[ico].append(domain)
+
+    for path in paths:
+        if not path or not Path(path).exists():
+            continue
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+
+        if isinstance(payload, dict) and "sample" in payload:
+            payload = payload["sample"]
+
+        if isinstance(payload, dict):
+            for ico, domains in payload.items():
+                add(ico, domains)
+        else:
+            for row in payload:
+                add(row["ico"], row.get("mpsv_domains"))
+
+    return seeds
 
 
 def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
@@ -663,7 +745,7 @@ def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
                     continue
         print(f"resuming: {len(done)} already done", file=sys.stderr)
 
-    seeds = load_seeds(seeds_path)
+    seeds = load_seeds(*(seeds_path or []))
 
     companies = []
     with open(CANDIDATES, encoding="utf-8") as handle:
@@ -710,20 +792,252 @@ def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
         print(f"  {status:10} {count:5}  {count / total * 100:5.1f} %", file=sys.stderr)
 
 
+
+# ---------------------------------------------------------------------------
+# Second pass: prove ownership through the domain registry
+# ---------------------------------------------------------------------------
+
+
+def registry_key(text):
+    """Business name reduced to what two registries can be compared on.
+
+    Legal form, punctuation and diacritics all vary between how a name
+    is filed in ARES and how the owner typed it into the domain
+    registry, so all three are removed before comparing.
+    """
+    plain = re.sub(r"[^a-z0-9 ]+", " ", fold(SUFFIX.sub("", text or "")))
+    return "".join(word for word in plain.split() if word not in LEGAL_TOKENS)
+
+
+def whois_evidence(record, name, people, postcode):
+    """Grade what the domain registry says about an owner.
+
+    Returns one of the proof tiers, a weak tier, or None.
+
+    The strictness is not caution for its own sake. Matching the owner
+    name loosely produced real false proofs on live data:
+
+        H & M spol. s r.o.   -> h-m.cz   -> H&M Hennes & Mauritz AB
+        BLIKA s.r.o.         -> blika.cz -> Blika A/S
+        SETRA, spol. s r.o.  -> setra.cz -> SETRA Service Trading
+
+    Every one of those is a different company that happens to share a
+    short name. So a partial name match only counts when something
+    independent agrees with it - the registered postcode, or a name long
+    enough that a collision is not plausible.
+    """
+    if not record:
+        return None
+
+    owner_name = registry_key(record.get("org") or "")
+    wanted = registry_key(name)
+    postcode_matches = bool(postcode) and record.get("postcode") == postcode
+
+    exact = bool(owner_name) and owner_name == wanted
+    partial = bool(owner_name) and (wanted in owner_name or owner_name in wanted)
+
+    # The registrant is a person who is on this company's board. Names
+    # are specific enough that this needs no second signal.
+    if record.get("person") and fold(record["person"]) in people:
+        return "whois_person"
+
+    if exact:
+        return "whois_org"
+
+    # A partial match is a different thing and gets its own name. Live
+    # data: SMOLO Recycling s.r.o. -> smolo.cz owned by SMOLO a.s.,
+    # Steelcase Czech Republic -> steelcase.cz owned by Steelcase Inc.
+    # The site is almost certainly the right place to read about the
+    # company, but the domain belongs to the group, not to this ICO -
+    # and a claim sourced there is a claim about the group.
+    if partial and (postcode_matches or len(wanted) >= 7):
+        return "whois_org_group"
+
+    # Right postcode, wrong or missing owner name. Suggestive, never
+    # proof: a postcode covers a whole town.
+    if postcode_matches:
+        return "whois_postcode"
+    return None
+
+
+def load_company_facts(path=CANDIDATES, db_path=Path("data/ui/companies.db")):
+    """ICO -> the register facts the WHOIS comparison needs.
+
+    Postcode comes from the UI index rather than from ARES: the flat
+    company dict keeps the town but not the PSC, and rebuilding it from
+    the 517 MB export to read one column would be absurd.
+    """
+    facts = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            record = json.loads(line)
+            people = {
+                fold(person["name"])
+                for group in ("directors", "owners")
+                for person in (record.get(group) or [])
+                if person.get("name")
+            }
+            facts[record["ico"]] = {"people": people, "postcode": None}
+
+    if Path(db_path).exists():
+        connection = sqlite3.connect(db_path)
+        for ico, postcode in connection.execute("SELECT ico, psc FROM company"):
+            if ico in facts and postcode:
+                facts[ico]["postcode"] = str(postcode).replace(" ", "")
+        connection.close()
+
+    return facts
+
+
+# Evidence that identifies one legal entity. Several companies sharing a
+# domain on any of these is an ordinary corporate group - pickering.cz
+# prints the ICO of Pickering Connect, Interfaces and Electronics alike,
+# and all three are right.
+IDENTIFYING = ("ico", "dic", "whois_org", "whois_person", "whois_org_group")
+
+
+def mark_contested(path=OUTPUT):
+    """Flag domains claimed by several companies on a generic name alone.
+
+    Found only by looking across the whole file, never at one company:
+    nineteen separate municipal firms called "Technické služby <town>"
+    were each handed technickesluzby.cz, because that is what their
+    shared name spells and the domain resolves. At most one of them owns
+    it. Four ČSAD companies split csad.cz the same way.
+
+    Nothing is deleted. The domain stays, because it is still the best
+    guess and a human may want to look - but `contested` says how many
+    others claim it, so no fact read from that page can be attributed to
+    this ICO without someone noticing.
+    """
+    rows = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    claims = {}
+    for row in rows:
+        if row.get("domain"):
+            claims.setdefault(row["domain"], []).append(row)
+
+    flagged = 0
+    for domain, holders in claims.items():
+        if len(holders) < 2:
+            continue
+        # A group is fine; only the ones resting on a name are contested,
+        # and only when they are not alone in resting on it.
+        weak = [r for r in holders if r.get("evidence") not in IDENTIFYING]
+        if len(weak) < 2:
+            continue
+        for row in weak:
+            row["contested"] = len(weak)
+            row["status"] = "probable"
+            flagged += 1
+
+    Path(path).write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8"
+    )
+    print(f"contested domains flagged on {flagged} companies", file=sys.stderr)
+    return flagged
+
+
+def run_whois(limit=None):
+    """Re-read websites.jsonl and try the registry on everything unproven.
+
+    A separate pass on purpose. CZ.NIC refuses a burst - measured, twelve
+    queries then a refusal - so this is serial at one query per second,
+    and mixing it into the threaded HTTP pass would drag every worker
+    down to that speed for the sake of half the companies.
+    """
+    from pipeline.sources import whois_cz
+
+    rows = [json.loads(line) for line in open(OUTPUT, encoding="utf-8")]
+    facts = load_company_facts()
+
+    todo = [row for row in rows if row.get("status") != "proven"]
+    if limit:
+        todo = todo[:limit]
+    print(f"{len(todo)} unproven of {len(rows)}; asking the domain registry",
+          file=sys.stderr)
+
+    upgraded = {}
+    for index, row in enumerate(todo, 1):
+        known = facts.get(row["ico"], {"people": set(), "postcode": None})
+
+        # Candidates worth asking about: whatever the HTTP pass looked
+        # at, best first. Only .cz - CZ.NIC knows nothing about .com.
+        domains = [row["domain"]] if row.get("domain") else []
+        domains += [entry["domain"] for entry in row.get("checked", [])]
+        domains = [d for d in dict.fromkeys(domains) if d and d.endswith(".cz")][:2]
+
+        for domain in domains:
+            record = whois_cz.owner(domain)
+            tier = whois_evidence(record, row["name"], known["people"], known["postcode"])
+            if not tier:
+                continue
+
+            row["whois"] = {"domain": domain, "tier": tier, "org": record.get("org")}
+
+            if tier == "whois_person":
+                # The registrant is a private individual, so the address
+                # WHOIS prints is their home - the jednatel of
+                # petr-vojta.cz is registered at his own street address.
+                # The name is kept because ARES already gave us the same
+                # name; the postal data is new personal data about a
+                # person and section 7 says the profile is of the
+                # company, not of the human. So it is not stored.
+                row["whois"]["person"] = record.get("person")
+            else:
+                row["whois"]["person"] = record.get("person")
+                row["whois"]["postcode"] = record.get("postcode")
+            if tier in ("whois_org", "whois_person"):
+                row.update({"status": "proven", "evidence": tier, "domain": domain,
+                            "url": row.get("url") or f"https://{domain}"})
+            elif row.get("status") != "proven":
+                row["status"] = "probable"
+                row["evidence"] = row.get("evidence") or tier
+                row["domain"] = row.get("domain") or domain
+            upgraded[tier] = upgraded.get(tier, 0) + 1
+            break
+
+        if index % 50 == 0:
+            print(f"  {index}/{len(todo)}  {upgraded}", file=sys.stderr)
+
+    with open(OUTPUT, "w", encoding="utf-8") as sink:
+        for row in rows:
+            sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    tally = {}
+    for row in rows:
+        tally[row["status"]] = tally.get(row["status"], 0) + 1
+    total = len(rows)
+    print("\nafter the registry pass:", file=sys.stderr)
+    for status in ("proven", "probable", "not_found", "no_lead", "error"):
+        count = tally.get(status, 0)
+        print(f"  {status:10} {count:5}  {count / total * 100:5.1f} %", file=sys.stderr)
+    print(f"  upgrades: {upgraded}", file=sys.stderr)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Resolve company websites from an ICO.")
     parser.add_argument("ico", nargs="?", help="single ICO to resolve")
     parser.add_argument("name", nargs="?", help="business name for that ICO")
     parser.add_argument("--city", help="registered town, strengthens a name match")
     parser.add_argument("--all", action="store_true", help="run over ares_candidates.jsonl")
+    parser.add_argument("--whois", action="store_true",
+                        help="second pass: ask CZ.NIC about everything still unproven")
+    parser.add_argument("--contested", action="store_true",
+                        help="flag domains several companies claim on a generic name")
     parser.add_argument("--limit", type=int, help="stop after N companies")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--seeds", default="data/raw/url_probe_sample.json",
-                        help="JSON with mpsv_domains per ICO")
+    parser.add_argument("--seeds", nargs="*",
+                        default=["data/raw/mpsv_domains.json",
+                                 "data/raw/mpsv_text_urls.json"],
+                        help="JSON files of known domains per ICO")
     parser.add_argument("--ignore-robots", action="store_true")
     args = parser.parse_args()
 
-    if args.all:
+    if args.contested:
+        mark_contested()
+    elif args.whois:
+        run_whois(args.limit)
+    elif args.all:
         run_all(args.limit, args.workers, args.seeds, not args.ignore_robots)
     elif args.ico and args.name:
         print(json.dumps(
