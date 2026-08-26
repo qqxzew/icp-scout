@@ -1,4 +1,3 @@
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -6,7 +5,7 @@ from pathlib import Path
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from pipeline.evidence.archive import Archive
@@ -14,7 +13,7 @@ from pipeline.evidence.archive import Archive
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ICP_PATH = PROJECT_ROOT / "icp" / "config.yaml"
-RESULTS_PATH = PROJECT_ROOT / "data" / "results.json"
+RESULTS_PATH = PROJECT_ROOT / "data" / "ui" / "results" / "latest.json"
 ARCHIVE = Archive(
 	db_path=PROJECT_ROOT / "data" / "archive.db",
 	snapshot_dir=PROJECT_ROOT / "data" / "snapshots",
@@ -89,18 +88,4 @@ def get_snapshot(snapshot_id: int):
 def get_results():
 	if not RESULTS_PATH.is_file():
 		raise HTTPException(status_code=404, detail="No completed run found")
-
-	try:
-		with RESULTS_PATH.open(encoding="utf-8") as file:
-			document = json.load(file)
-	except (OSError, json.JSONDecodeError) as error:
-		raise HTTPException(status_code=500, detail="Results file is invalid") from error
-
-	if not isinstance(document, dict) or not isinstance(document.get("results"), list):
-		raise HTTPException(status_code=500, detail="Results file has invalid format")
-
-	return {
-		"run_id": document.get("run_id"),
-		"finished_at": document.get("finished_at"),
-		"results": document["results"][:5],
-	}
+	return FileResponse(RESULTS_PATH, media_type="application/json")
