@@ -53,6 +53,7 @@ Run:
 """
 
 import argparse
+import html as html_module
 import json
 import re
 import socket
@@ -174,6 +175,53 @@ def decode(body):
     return body.decode("utf-8", "replace")
 
 
+# The whole element is matched, not just the attribute. Replacing only
+# the attribute puts the decoded address *inside* a tag, and the tag
+# stripper then removes it along with the tag - the decode runs, the
+# result is thrown away, and the page still looks address-free.
+CFEMAIL = re.compile(r'<[^>]*\bdata-cfemail="([0-9a-fA-F]{6,})"[^>]*>')
+
+
+def decode_cfemail(payload):
+    """Undo Cloudflare's e-mail obfuscation.
+
+    Cloudflare replaces addresses with a hex blob whose first byte is a
+    XOR key for the rest. Sites behind it look like they publish no
+    addresses at all: cobap.cz renders a 5300-character contact page on
+    which a plain reader finds zero e-mails and which actually carries
+    twenty-two.
+    """
+    try:
+        key = int(payload[:2], 16)
+        return "".join(
+            chr(int(payload[i:i + 2], 16) ^ key)
+            for i in range(2, len(payload), 2)
+        )
+    except ValueError:
+        return ""
+
+
+def readable(html):
+    """Visible text with hidden addresses restored - what gets archived.
+
+    This has to happen before the markup is stripped, and before the
+    text reaches the archive, because both ways of hiding an address
+    live *in* the markup:
+
+    * HTML entities - buzuluk.cz prints `&#105;nfo&#64;buzuluk.cz`
+    * Cloudflare data-cfemail blobs, which sit inside an anchor tag
+
+    Archive the output of to_text() alone and those addresses are gone
+    for good - the tag that carried them is already deleted, so no later
+    stage can recover them however clever it is. Measured on 60 contact
+    pages: Cloudflare on 2 %, plus a JavaScript decoder on a further
+    5 % which is *not* handled here, since running page scripts is out
+    of scope.
+    """
+    restored = CFEMAIL.sub(lambda m: " " + decode_cfemail(m.group(1)) + " ", html)
+    return to_text(html_module.unescape(restored))
+
+
 def to_text(html):
     """Visible text of a page, whitespace collapsed.
 
@@ -281,6 +329,22 @@ def candidates(name, seed_domains=()):
 # ---------------------------------------------------------------------------
 
 
+# A DNS retry is not optional the way it looked when this was written.
+# Measured on the first full harvest run (workers=10, ~90 minutes):
+# 1899 of 2384 previously-proven companies came back no_lead - every one
+# of their candidate domains failed getaddrinfo. Re-tested by hand right
+# after the run: every single domain resolved instantly. The resolver
+# itself was the thing failing under sustained concurrent load, and
+# socket.gaierror is exactly what a Windows/glibc resolver raises for a
+# timeout or a refused query, not only for a name that truly does not
+# exist - so treating gaierror as final evidence of absence was wrong in
+# precisely the case that matters. Two retries with a short backoff cost
+# nothing on the 60 % that are genuinely dead (they still fail fast on
+# the first try) and recover the rest.
+DNS_ATTEMPTS = 3
+DNS_BACKOFF = 0.3  # seconds, doubled on each retry
+
+
 def resolves(domain):
     """True when the domain has an A/AAAA record, under either form.
 
@@ -290,13 +354,19 @@ def resolves(domain):
     timeout. Everything downstream only sees names that exist.
     """
     for host in (domain, f"www.{domain}"):
-        try:
-            socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
-            return True
-        except socket.gaierror:
-            continue
-        except Exception:
-            return True  # resolver trouble is not evidence of absence
+        delay = DNS_BACKOFF
+        for attempt in range(DNS_ATTEMPTS):
+            try:
+                socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+                return True
+            except socket.gaierror:
+                if attempt < DNS_ATTEMPTS - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                break  # exhausted retries for this host, try the next
+            except Exception:
+                return True  # resolver trouble is not evidence of absence
     return False
 
 
@@ -550,40 +620,158 @@ def looks_parked(text):
 # ---------------------------------------------------------------------------
 
 
-def inspect(fetcher, domain, ico, name, city):
+# One harvest, not three passes. Resolution, contacts and the
+# production-mode signal all used to fetch the same sites separately -
+# ~12k, ~8k and ~1k requests over the same hosts. Classifying links once
+# and taking every useful page in a single visit replaces all of it, and
+# has a second effect worth more than the saving: the ICO is looked for
+# across the whole harvest rather than only contact pages, so a company
+# that prints its number on /o-nas now resolves instead of failing.
+PAGE_KINDS = (
+    # Contact gets the largest budget because that is where the ICO
+    # lives, and a proof is worth more than any other page here. Cut to
+    # three and REMAK a.s. stopped resolving: its number is on
+    # /cs/kontakt/sidlo-spolecnosti/4482, the fourth contact link on the
+    # page. Five matches what the previous single-purpose pass allowed.
+    ("contact", re.compile(
+        r"(?i)kontakt|contact|impressum|imprint|[uú]daje", ), 5),
+    ("career", re.compile(
+        r"(?i)karier|kari[eé]r|volna-?mist|voln[aá].?m[ií]st|nabidka-?prace|"
+        r"prace-?u-?nas|\bjobs?\b|career|zamestnani|nabor", ), 2),
+    ("production", re.compile(
+        r"(?i)vyrob|v[yý]rob|sluzb|slu[zž]b|produkt|technolog|strojni-?park|"
+        r"strojov|co-?delame|zamereni|sortiment", ), 3),
+    ("about", re.compile(
+        r"(?i)o-?n[aá]s|o-?firme|o-?spole[cč]nosti|about|profil|historie|"
+        r"veden[ií]|management|struktura", ), 2),
+    ("references", re.compile(
+        r"(?i)referenc|realizac|projekty|nase-?prace|portfolio", ), 1),
+)
+
+
+def classify_link(href, label):
+    """Which part of a site a link leads to, or None if it leads nowhere useful.
+
+    Both the href and the anchor text are tested: Czech sites label the
+    same page "Kontakty" in the menu and /kontaktni-udaje in the path,
+    and either one alone misses a fair share.
+    """
+    for kind, pattern, _ in PAGE_KINDS:
+        if pattern.search(href) or pattern.search(label):
+            return kind
+    return None
+
+
+def harvest(fetcher, domain, limit_per_kind=None):
+    """Read one site once: homepage plus the useful pages behind it.
+
+    Returns [(url, html, kind)], homepage first. Budgets are per kind so
+    that a site with forty product pages cannot crowd out its single
+    contact page - which is what a flat "first N links" rule does, and
+    is how the earlier version lost proofs (see the dedup note below).
+    """
+    home = None
+    for scheme in ("https://", "http://"):
+        html, final = fetcher.get(f"{scheme}{domain}")
+        if html:
+            home = (final, html, "home")
+            break
+    if home is None:
+        return []
+
+    pages = [home]
+    final, html, _ = home
+    host = urlparse(final).netloc.lower().replace("www.", "")
+    budgets = {kind: (limit_per_kind or cap) for kind, _, cap in PAGE_KINDS}
+    picked, seen = {}, set()
+
+    for href, anchor in LINK.findall(html):
+        label = MARKUP.sub(" ", anchor).strip()
+        kind = classify_link(href, label)
+        if not kind or budgets[kind] <= 0:
+            continue
+
+        url = urljoin(final, href.strip())
+        parts = urlparse(url)
+        if parts.scheme not in ("http", "https"):
+            continue
+        if parts.netloc.lower().replace("www.", "") != host:
+            continue
+
+        # Multilingual sites repeat a page under /cs/ and /en/; the path
+        # without its language prefix identifies it. Keying on the last
+        # segment alone would merge /home/kontakty with
+        # /strojirenska-vyroba/kontakty, which cost a real proof once.
+        segments = [s for s in parts.path.split("/") if s]
+        if segments and LANGUAGE_PREFIX.match(segments[0]):
+            segments = segments[1:]
+        key = fold("/".join(segments))
+        if url in seen or key in seen:
+            continue
+        seen.add(url)
+        seen.add(key)
+
+        picked.setdefault(kind, []).append((rank_link(url, label), url))
+        budgets[kind] -= 1
+
+    for kind, candidates in picked.items():
+        for _, url in sorted(candidates, reverse=True):
+            body, resolved = fetcher.get(url)
+            if body:
+                pages.append((resolved, body, kind))
+
+    return pages
+
+
+def keep(archive, ico, url, html, run_id=None, kind=None):
+    """Put one fetched page into the evidence store.
+
+    Called from inspect() rather than from Fetcher.get() on purpose: the
+    fetcher does not know which company it is working for, and archiving
+    robots.txt and dead candidate hosts would fill the store with pages
+    nobody will ever quote.
+    """
+    if archive is None or not html:
+        return None
+    try:
+        snapshot_id, _ = archive.store(
+            ico, "website", readable(html), url=url, run_id=run_id, kind=kind
+        )
+        return snapshot_id
+    except Exception as error:  # the archive must never break a run
+        print(f"archive: {type(error).__name__} on {url}", file=sys.stderr)
+        return None
+
+
+def inspect(fetcher, domain, ico, name, city, archive=None, run_id=None):
     """Read one candidate site and grade the evidence it carries.
 
     Returns None when the domain is not usable at all, otherwise a dict
     with the strongest evidence found.
     """
-    html = final = None
-    for url in (f"https://{domain}", f"http://{domain}"):
-        html, final = fetcher.get(url)
-        if html:
-            break
-    if not html:
+    pages = harvest(fetcher, domain)
+    if not pages:
         return None
 
-    pages = [(final, html)]
-
-    links = contact_links(html, final)
     # A site whose navigation is built by JavaScript hands us a homepage
     # with no usable links at all. Two guessed paths are a cheap last
     # resort - as a fallback only, never as the primary strategy.
-    if not links:
-        root = f"{urlparse(final).scheme}://{urlparse(final).netloc}"
-        links = [f"{root}/kontakt", f"{root}/kontakty"]
+    if len(pages) == 1:
+        root_url = pages[0][0]
+        root = f"{urlparse(root_url).scheme}://{urlparse(root_url).netloc}"
+        for guess in (f"{root}/kontakt", f"{root}/kontakty"):
+            body, resolved = fetcher.get(guess)
+            if body:
+                pages.append((resolved, body, "contact"))
 
-    for url in links:
-        body, resolved = fetcher.get(url)
-        if body:
-            pages.append((resolved, body))
+    for url, body, kind in pages:
+        keep(archive, ico, url, body, run_id, kind)
 
-    if all(looks_parked(to_text(body)) for _, body in pages):
+    if all(looks_parked(to_text(body)) for _, body, _ in pages):
         return None
 
     weak = None
-    for url, body in pages:
+    for url, body, _kind in pages:
         text = to_text(body)
 
         quote = find_ico(text, ico)
@@ -607,7 +795,8 @@ def inspect(fetcher, domain, ico, name, city):
     return weak
 
 
-def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=True):
+def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=True,
+            archive=None, run_id=None):
     """Find and prove the website of one company.
 
     Always returns a dict carrying `status`:
@@ -650,7 +839,7 @@ def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=
 
     best = None
     for domain in live:
-        found = inspect(fetcher, domain, ico, name, city)
+        found = inspect(fetcher, domain, ico, name, city, archive, run_id)
         result["checked"].append({
             "domain": domain,
             "outcome": found["evidence"] if found else "no_match",
@@ -728,7 +917,7 @@ def load_seeds(*paths):
     return seeds
 
 
-def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
+def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True, archive=None):
     """Resolve every candidate on file, appending as it goes.
 
     Appends rather than collecting: a run over 3299 companies takes long
@@ -762,12 +951,14 @@ def run_all(limit=None, workers=8, seeds_path=None, respect_robots=True):
     # One shared Fetcher: its session is thread-local, its robots cache
     # is not, which is exactly the split we want.
     fetcher = Fetcher(respect_robots=respect_robots)
+    run_id = archive.start_run(note="website resolution") if archive else None
 
     def work(record):
         try:
             return resolve(
                 record["ico"], record["name"], record.get("city"),
                 seeds.get(record["ico"], []), fetcher=fetcher,
+                archive=archive, run_id=run_id,
             )
         except Exception as error:  # one bad site must not end the run
             return {"ico": record["ico"], "name": record["name"],
@@ -1031,17 +1222,25 @@ if __name__ == "__main__":
                                  "data/raw/mpsv_text_urls.json"],
                         help="JSON files of known domains per ICO")
     parser.add_argument("--ignore-robots", action="store_true")
+    parser.add_argument("--archive", action="store_true",
+                        help="keep every page read in the evidence store")
     args = parser.parse_args()
+
+    store = None
+    if args.archive:
+        from pipeline.evidence.archive import Archive
+        store = Archive()
 
     if args.contested:
         mark_contested()
     elif args.whois:
         run_whois(args.limit)
     elif args.all:
-        run_all(args.limit, args.workers, args.seeds, not args.ignore_robots)
+        run_all(args.limit, args.workers, args.seeds, not args.ignore_robots, store)
     elif args.ico and args.name:
         print(json.dumps(
-            resolve(args.ico, args.name, args.city, respect_robots=not args.ignore_robots),
+            resolve(args.ico, args.name, args.city,
+                    respect_robots=not args.ignore_robots, archive=store),
             ensure_ascii=False, indent=2,
         ))
     else:

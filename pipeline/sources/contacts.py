@@ -547,7 +547,30 @@ def quote_for(text, needle):
 # ---------------------------------------------------------------------------
 
 
-def get_contacts(ico, site, company, fetcher=None):
+def from_archive(archive, ico):
+    """Pages already harvested for this company, or [] if none.
+
+    Reading here instead of fetching again is the point of the single
+    harvest in website.py: the same sites used to be visited three times
+    - once to resolve the domain, once for contacts, once for the
+    production-mode signal. The archived text is what the resolver read,
+    with entities and Cloudflare blobs already decoded, so nothing is
+    lost by not having the markup.
+    """
+    if archive is None:
+        return []
+    pages = []
+    for row, text in archive.documents(ico, source="website"):
+        if text:
+            pages.append((row["url"], text, row["kind"]))
+    # Contact pages first: they carry the named people, and read() stops
+    # improving once it has found them.
+    order = {"contact": 0, "about": 1, "home": 2, "career": 3}
+    pages.sort(key=lambda p: order.get(p[2], 9))
+    return pages
+
+
+def get_contacts(ico, site, company, fetcher=None, archive=None):
     """Collect contacts for one company from its own website.
 
     `site` is a row of websites.jsonl, `company` a row of
@@ -580,19 +603,23 @@ def get_contacts(ico, site, company, fetcher=None):
         result["status"] = "no_site"
         return result
 
-    # Start from the page that already proved the domain - on 1006 of
-    # 2384 proven companies that page is the contact page itself, so it
-    # is both the best guess and already known to exist.
-    pages = []
-    first = site.get("url") or f"https://{site['domain']}"
-    html, url = fetcher.get(first)
-    if html:
-        pages.append((url, html))
-        if "kontakt" not in url.lower():
-            for link in contact_links(html, url, limit=2):
-                body, resolved = fetcher.get(link)
-                if body:
-                    pages.append((resolved, body))
+    # Prefer what the harvest already stored. Falling back to the
+    # network keeps this module usable on a company that was resolved
+    # before the archive existed, or when it is run on its own.
+    archived = from_archive(archive, ico)
+    pages = [(url, text, kind) for url, text, kind in archived]
+    result["read_from"] = "archive" if pages else "network"
+
+    if not pages:
+        first = site.get("url") or f"https://{site['domain']}"
+        html, url = fetcher.get(first)
+        if html:
+            pages.append((url, page_text(html), None))
+            if "kontakt" not in url.lower():
+                for link in contact_links(html, url, limit=2):
+                    body, resolved = fetcher.get(link)
+                    if body:
+                        pages.append((resolved, page_text(body), None))
 
     if not pages:
         result["status"] = "unreachable"
@@ -600,8 +627,7 @@ def get_contacts(ico, site, company, fetcher=None):
 
     def read(collected):
         best = None
-        for url, html in collected:
-            text = page_text(html)
+        for url, text, _kind in collected:
             channels = company_channels(text, site["domain"], company.get("name"))
             people = find_people(text, company.get("directors"), company.get("name"), site["domain"])
             # People the register knows come first and are never
@@ -622,20 +648,25 @@ def get_contacts(ico, site, company, fetcher=None):
 
     best = read(pages)
 
-    # Nobody from the register was reachable on the contact page. Try the
-    # management pages before giving up and handing over a switchboard.
-    if best and not any(p.get("email") or p.get("phone") for p in best[3]):
-        for link in team_links(pages[0][1], pages[0][0]):
-            body, resolved = fetcher.get(link)
-            if body:
-                pages.append((resolved, body))
-        best = read(pages)
+    # Nobody from the register was reachable. The management-page
+    # fallback only applies when reading from the network - the harvest
+    # already collected `about` pages, which is where those names live,
+    # so from the archive there is nothing further to fetch.
+    if (result["read_from"] == "network" and best
+            and not any(p.get("email") or p.get("phone") for p in best[3])):
+        html, url = fetcher.get(pages[0][0])
+        if html:
+            for link in team_links(html, url):
+                body, resolved = fetcher.get(link)
+                if body:
+                    pages.append((resolved, page_text(body), None))
+            best = read(pages)
 
     _, url, channels, people = best
     result.update({"status": "ok", "source_url": url, "company": channels, "people": people})
 
     # Where the generic channels were read from, so the card can show it.
-    text = page_text(next(h for u, h in pages if u == url))
+    text = next(t for u, t, _ in pages if u == url)
     result["company_quote"] = quote_for(text, (channels["emails"] or channels["phones"] or [""])[0])
     return result
 
@@ -645,7 +676,7 @@ def load(path, key="ico"):
         return {json.loads(line)[key]: json.loads(line) for line in handle}
 
 
-def run_all(limit=None, workers=8):
+def run_all(limit=None, workers=8, archive=None):
     """Read contacts for every company whose website is known.
 
     Appends one line per company as it finishes, and skips ICOs already
@@ -685,7 +716,7 @@ def run_all(limit=None, workers=8):
 
     def work(ico):
         try:
-            return get_contacts(ico, sites[ico], companies[ico], fetcher)
+            return get_contacts(ico, sites[ico], companies[ico], fetcher, archive)
         except Exception as error:  # one broken site must not end the run
             return {
                 "ico": ico, "name": companies[ico].get("name"), "status": "error",
@@ -735,14 +766,22 @@ if __name__ == "__main__":
     parser.add_argument("--all", action="store_true", help="every company with a known site")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--archive", action="store_true",
+                        help="read pages from the evidence store instead of refetching")
     args = parser.parse_args()
 
+    store = None
+    if args.archive:
+        from pipeline.evidence.archive import Archive
+        store = Archive()
+
     if args.all:
-        run_all(args.limit, args.workers)
+        run_all(args.limit, args.workers, store)
     elif args.ico:
         target = str(args.ico).zfill(8)
         print(json.dumps(
-            get_contacts(target, load(SITES).get(target), load(COMPANIES).get(target, {})),
+            get_contacts(target, load(SITES).get(target), load(COMPANIES).get(target, {}),
+                         archive=store),
             ensure_ascii=False, indent=2,
         ))
     else:

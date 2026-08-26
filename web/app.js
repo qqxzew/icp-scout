@@ -1,4 +1,5 @@
 const DATA = "../data/ui/";
+const API = "http://127.0.0.1:8000";
 
 const CHECK = '<svg viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3L9.5 3.8"/></svg>';
 const CHEVRON = '<svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></svg>';
@@ -176,13 +177,39 @@ el.back.addEventListener("click", () => {
   go(view.name === "nace-codes" ? "nace" : "root");
 });
 
-el.save.addEventListener("click", () => {
+el.save.addEventListener("click", async () => {
   if (!dirty) return;
-  saved = clone(draft);
-  dirty = false;
-  exitArmed = false;
-  markDirty();
-  renderSummary();
+
+  el.save.disabled = true;
+  el.discard.textContent = "Ukládám…";
+  try {
+    const response = await fetch(API + "/api/filters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nace: [...draft.nace],
+        sizes: [...draft.sizes],
+        regions: [...draft.regions],
+        km: draft.km,
+        from: draft.from,
+        origin: draft.origin,
+      }),
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    saved = clone(draft);
+    dirty = false;
+    exitArmed = false;
+    markDirty();
+    renderSummary();
+  } catch (error) {
+    el.discard.textContent = "Не удалось сохранить — проверьте API";
+    console.error("Could not save filters", error);
+    sizePanel();
+  } finally {
+    el.save.disabled = false;
+  }
 });
 
 el.cancel.addEventListener("click", () => {

@@ -18,9 +18,12 @@ Run manually:
     python -m pipeline.sources.ares 29092540
 """
 
+import argparse
 import sys
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import requests
 
@@ -203,52 +206,65 @@ def parse_res(data):
 
 
 def parse_vr(data):
-    """ekonomicke-subjekty-vr: current directors and owners.
+    """ekonomicke-subjekty-vr: directors and owners, current and departed.
 
     People sit two levels deep: statutarniOrgany[] -> clenoveOrganu[]
     and spolecnici[] -> spolecnik[]. An entry with datumVymazu is
-    historical - the person already left.
+    historical - the person already left - and used to be dropped here
+    outright.
+
+    That threw away the NOW signal that matters most: someone leaving is
+    the ICP's own recognition question turned real ("kdo u vás ví, co se
+    má dělat zítra - a co se stane, když onemocní"). A departure is
+    dated exactly like an arrival, so it belongs in the same shape of
+    record, in its own list rather than mixed into the current one -
+    scoring needs to treat "still here" and "just left" as different
+    facts, not filter one of them out before scoring ever sees it.
     """
     record = first_record(data)
     if record is None:
         return {
             "directors": None,
             "owners": None,
+            "departed_directors": None,
+            "departed_owners": None,
         }
 
-    directors = []
+    directors, departed_directors = [], []
     for organ in record.get("statutarniOrgany", []):
         for member in organ.get("clenoveOrganu", []):
-            if member.get("datumVymazu"):
-                continue
-
-            directors.append({
+            entry = {
                 "name": full_name(member.get("fyzickaOsoba", {})),
                 "role": member.get("clenstvi", {}).get("funkce", {}).get("nazev"),
                 "since": member.get("datumZapisu"),
-            })
+            }
+            if member.get("datumVymazu"):
+                entry["until"] = member["datumVymazu"]
+                departed_directors.append(entry)
+            else:
+                directors.append(entry)
 
-    owners = []
+    owners, departed_owners = [], []
     for organ in record.get("spolecnici", []):
         for owner in organ.get("spolecnik", []):
-            if owner.get("datumVymazu"):
-                continue
-
             # An owner can be a person or another company.
             osoba = owner.get("osoba", {})
             name = (
                 full_name(osoba.get("fyzickaOsoba", {}))
                 or osoba.get("pravnickaOsoba", {}).get("obchodniJmeno")
             )
-
-            owners.append({
-                "name": name,
-                "since": owner.get("datumZapisu"),
-            })
+            entry = {"name": name, "since": owner.get("datumZapisu")}
+            if owner.get("datumVymazu"):
+                entry["until"] = owner["datumVymazu"]
+                departed_owners.append(entry)
+            else:
+                owners.append(entry)
 
     return {
         "directors": directors,
         "owners": owners,
+        "departed_directors": departed_directors,
+        "departed_owners": departed_owners,
     }
 
 
@@ -311,20 +327,34 @@ def parse_rzp(data):
 # ---------------------------------------------------------------------------
 
 
-def get_company(ico):
+def get_company(ico, archive=None, run_id=None):
     """Fetch all four ARES endpoints and merge them into one flat dict.
 
     Keys parsed from a register the company is absent from are set to
     None - "no record in that register" is itself a fact and must not
     look like an empty record.
+
+    Each raw response is archived before parsing, when an archive is
+    given. A NOW claim like "director X departed 2026-08-18" is only a
+    fact if something backs it - and the register's own JSON is that
+    something. Without this, claims built from ARES data would be the
+    one kind of claim in the whole project with no snapshot behind them.
     """
     ico = str(ico).strip().zfill(8)  # ARES only matches the padded form
-
     company = {"ico": ico}
-    company.update(parse_summary(fetch("ekonomicke-subjekty", ico)))
-    company.update(parse_res(fetch("ekonomicke-subjekty-res", ico)))
-    company.update(parse_vr(fetch("ekonomicke-subjekty-vr", ico)))
-    company.update(parse_rzp(fetch("ekonomicke-subjekty-rzp", ico)))
+
+    for endpoint, parser in (
+        ("ekonomicke-subjekty", parse_summary),
+        ("ekonomicke-subjekty-res", parse_res),
+        ("ekonomicke-subjekty-vr", parse_vr),
+        ("ekonomicke-subjekty-rzp", parse_rzp),
+    ):
+        payload = fetch(endpoint, ico)
+        if archive is not None:
+            url = f"{BASE_URL}/{endpoint}/{ico}"
+            body = json.dumps(payload, ensure_ascii=False) if payload is not None else "null"
+            archive.store(ico, "ares", body, url=url, run_id=run_id)
+        company.update(parser(payload))
 
     # Coordinates come from RUIAN, not ARES - a separate call that
     # only makes sense when the address code is known.
@@ -336,10 +366,87 @@ def get_company(ico):
     return company
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m pipeline.sources.ares <ICO>")
-        sys.exit(1)
+# ---------------------------------------------------------------------------
+# Batch run
+# ---------------------------------------------------------------------------
 
-    result = get_company(sys.argv[1])
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+RES_BULK = Path("data/raw/res_data.csv")
+OUTPUT = Path("data/raw/ares_candidates_v2.jsonl")
+
+
+def run_all(limit=None, workers=6, archive=None):
+    """Enrich every ICP candidate through ARES, appending as it goes.
+
+    Writes to a *new* file rather than resuming into the existing
+    ares_candidates.jsonl. Resuming against the old file would silently
+    skip every company already in it - and every one of them is missing
+    departed_directors/departed_owners, which is the entire point of
+    this run. Once finished, swap the new file in.
+
+    Pool size is 6, not 10: measured in the log (13.5, 13.7) that 10
+    workers draws a burst of 403s in the first ~300 requests. Retry with
+    backoff is already in fetch(), but there is nothing to gain by
+    courting the limit on purpose.
+    """
+    from pipeline.sources.res_bulk import select
+
+    done = set()
+    if OUTPUT.exists():
+        with open(OUTPUT, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    done.add(json.loads(line)["ico"])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        print(f"resuming: {len(done)} already done", file=sys.stderr)
+
+    candidates = [row["ICO"].zfill(8) for row in select(RES_BULK) if row["ICO"].zfill(8) not in done]
+    if limit:
+        candidates = candidates[:limit]
+    print(f"enriching {len(candidates)} companies with {workers} workers", file=sys.stderr)
+
+    run_id = archive.start_run(note="ares re-enrichment: departures + archive") if archive else None
+
+    def work(ico):
+        try:
+            return get_company(ico, archive=archive, run_id=run_id)
+        except Exception as error:
+            return {"ico": ico, "error": f"{type(error).__name__}: {error}"}
+
+    tally = {"ok": 0, "error": 0}
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT, "a", encoding="utf-8") as sink:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, result in enumerate(pool.map(work, candidates), 1):
+                sink.write(json.dumps(result, ensure_ascii=False) + "\n")
+                sink.flush()
+                tally["error" if "error" in result else "ok"] += 1
+                if index % 100 == 0:
+                    print(f"  {index}/{len(candidates)}  {tally}", file=sys.stderr)
+
+    if archive:
+        archive.finish_run(run_id)
+    print(f"finished: {tally}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ARES company enrichment.")
+    parser.add_argument("ico", nargs="?", help="single ICO")
+    parser.add_argument("--all", action="store_true", help="re-enrich every ICP candidate")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--archive", action="store_true",
+                        help="store raw responses in the evidence store")
+    args = parser.parse_args()
+
+    store = None
+    if args.archive:
+        from pipeline.evidence.archive import Archive
+        store = Archive()
+
+    if args.all:
+        run_all(args.limit, args.workers, store)
+    elif args.ico:
+        print(json.dumps(get_company(args.ico, archive=store), ensure_ascii=False, indent=2))
+    else:
+        parser.error("give an ICO, or --all")
