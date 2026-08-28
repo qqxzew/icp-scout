@@ -94,6 +94,24 @@ CREATE TABLE IF NOT EXISTS claim (
 );
 CREATE INDEX IF NOT EXISTS idx_claim_ico ON claim(ico, kind);
 
+CREATE TABLE IF NOT EXISTS discard (
+    id          INTEGER PRIMARY KEY,
+    ico         TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    value       TEXT,
+    -- What the model claimed as a quote. NOT NULL, unlike claim.quote -
+    -- a discard exists *because* there was a quote and it did not match;
+    -- an inference with no quote is never a discard, it is a claim.
+    quote       TEXT NOT NULL,
+    -- The snapshot the model was actually reading when it produced this.
+    -- Kept even though the quote failed to match it, so a hallucination
+    -- rate can be reported per source, not just as one global number.
+    snapshot_id INTEGER NOT NULL REFERENCES snapshot(id),
+    run_id      INTEGER REFERENCES run(id),
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discard_ico ON discard(ico, kind);
+
 CREATE TABLE IF NOT EXISTS delivered (
     ico          TEXT NOT NULL,
     run_id       INTEGER NOT NULL REFERENCES run(id),
@@ -263,26 +281,103 @@ class Archive:
         There is no way to call this without a snapshot: the argument is
         required and the column is a foreign key. That is deliberate -
         an unsourced claim should be impossible, not merely discouraged.
+
+        Idempotent by content, same as snapshot storage: a claim with the
+        same (ico, kind, value, state, quote, snapshot_id) is not
+        inserted twice - the existing row's run_id is bumped to the
+        current run instead. Without this, a cache hit in llm/client.py
+        (same input, no new API call) still reaches this function and
+        would otherwise duplicate the claim every time a run is resumed
+        or repeated over already-processed companies - found live while
+        building pain.py, when piping one command's output through two
+        different filters silently ran the whole agent twice.
         """
         if state not in ("fact", "inference"):
             raise ValueError(f"state must be fact or inference, got {state!r}")
+        ico = str(ico).zfill(8)
         with self._lock:
+            existing = self.db.execute(
+                "SELECT id FROM claim WHERE ico = ? AND kind = ? AND value IS ?"
+                " AND state = ? AND quote IS ? AND snapshot_id = ?",
+                (ico, kind, value, state, quote, snapshot_id),
+            ).fetchone()
+            if existing is not None:
+                if run_id is not None:
+                    self.db.execute("UPDATE claim SET run_id = ? WHERE id = ?",
+                                    (run_id, existing["id"]))
+                    self.db.commit()
+                return existing["id"]
             cursor = self.db.execute(
                 "INSERT INTO claim (ico, kind, value, state, quote, snapshot_id, run_id, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(ico).zfill(8), kind, value, state, quote, snapshot_id, run_id, now()),
+                (ico, kind, value, state, quote, snapshot_id, run_id, now()),
             )
             self.db.commit()
             return cursor.lastrowid
 
     def claims(self, ico, kind=None):
+        # s.source and s.kind travel with the row because not every
+        # snapshot has a URL: vacancy text is assembled from MPSV's daily
+        # JSON and archived as prose, so url is NULL and a card built on
+        # url alone showed a verified quote with a blank source next to
+        # it - the one thing a card must never do.
         with self._lock:
             return self.db.execute(
-                "SELECT c.*, s.url, s.fetched_at FROM claim c"
+                "SELECT c.*, s.url, s.fetched_at, s.source, s.kind AS page_kind FROM claim c"
                 " JOIN snapshot s ON s.id = c.snapshot_id"
                 " WHERE c.ico = ? AND (? IS NULL OR c.kind = ?)"
                 " ORDER BY c.created_at DESC",
                 (str(ico).zfill(8), kind, kind),
+            ).fetchall()
+
+    def add_discard(self, ico, kind, value, quote, snapshot_id, run_id=None):
+        """Record one hallucination: a quote the model claimed but the
+        archived page does not contain.
+
+        This is not an error path to swallow. It is the one piece of
+        evidence that the verifier is actually doing its job - "here is
+        what the model got wrong, and here is how we caught it" is a
+        stronger answer at defence than a silent drop, and it is the
+        direct output of hypothesis D in the brief.
+
+        Idempotent by content, for the same reason as add_claim() -
+        a repeated run over a cache-hit response bumps run_id instead of
+        inserting a second identical discard.
+        """
+        ico = str(ico).zfill(8)
+        with self._lock:
+            existing = self.db.execute(
+                "SELECT id FROM discard WHERE ico = ? AND kind = ? AND value IS ?"
+                " AND quote = ? AND snapshot_id = ?",
+                (ico, kind, value, quote, snapshot_id),
+            ).fetchone()
+            if existing is not None:
+                if run_id is not None:
+                    self.db.execute("UPDATE discard SET run_id = ? WHERE id = ?",
+                                    (run_id, existing["id"]))
+                    self.db.commit()
+                return existing["id"]
+            cursor = self.db.execute(
+                "INSERT INTO discard (ico, kind, value, quote, snapshot_id, run_id, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ico, kind, value, quote, snapshot_id, run_id, now()),
+            )
+            self.db.commit()
+            return cursor.lastrowid
+
+    def discards(self, ico=None, kind=None):
+        # Zero-padded exactly like claims() and every write path. Without
+        # this, discards("207675") returned nothing while the row sat
+        # there under "00207675" - a silent empty result, which on a card
+        # reads as "the model got everything right" rather than "you
+        # asked the wrong question".
+        if ico is not None:
+            ico = str(ico).zfill(8)
+        with self._lock:
+            return self.db.execute(
+                "SELECT * FROM discard WHERE (? IS NULL OR ico = ?) AND (? IS NULL OR kind = ?)"
+                " ORDER BY created_at DESC",
+                (ico, ico, kind, kind),
             ).fetchall()
 
     # -- reporting ---------------------------------------------------
@@ -295,6 +390,7 @@ class Archive:
                 "distinct_documents": one("SELECT COUNT(DISTINCT sha256) FROM snapshot"),
                 "companies": one("SELECT COUNT(DISTINCT ico) FROM snapshot"),
                 "claims": one("SELECT COUNT(*) FROM claim"),
+                "discards": one("SELECT COUNT(*) FROM discard"),
                 "runs": one("SELECT COUNT(*) FROM run"),
                 "stored_mb": sum(
                     p.stat().st_size for p in self.snapshot_dir.rglob("*.txt")
