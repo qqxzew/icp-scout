@@ -78,9 +78,28 @@ USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
 
 # How far to go per company. Generation is nearly free, DNS is cheap,
 # HTTP is not - so the funnel narrows hard at the last step.
-MAX_CANDIDATES = 24   # spellings generated
-MAX_LIVE = 6          # of those, how many that resolve get fetched
-MAX_PAGES = 6         # pages read per site: homepage + contact links
+#
+# Measured on the full base of 3294 companies before trusting these:
+#   MAX_CANDIDATES  no company reached 24 - the most any name produced
+#                   was 15, so this ceiling costs nothing and is left
+#                   where it is.
+#   MAX_LIVE        428 companies (13 %) DID hit the old cap of 6, and
+#                   143 of those never got a proof. Raised to 12,
+#                   because the cap was in the wrong place: resolves()
+#                   already runs over every candidate before the slice,
+#                   so the DNS work was paid for in full either way and
+#                   the cap only withheld the cheap part - the HTTP
+#                   probe. Bounded cost: at most six extra probes for
+#                   the 13 % of companies that get that far.
+MAX_CANDIDATES = 24      # spellings generated
+MAX_LIVE = 12            # of those, how many that resolve get probed
+
+# Contact links followed from a homepage - NOT the total pages read per
+# company. Named MAX_PAGES until it was checked against the archive and
+# companies turned out to hold up to 33 harvested pages: harvest() has
+# its own per-kind budgets (contact 5, production 3, ...) that sum well
+# past this number, and this constant never governed them.
+MAX_CONTACT_LINKS = 5
 
 # Hard ceilings on one response. `timeout` above only limits the gap
 # between two packets, so a server that trickles bytes indefinitely
@@ -488,7 +507,7 @@ def rank_link(url, label):
     return 1
 
 
-def contact_links(html, base_url, limit=MAX_PAGES - 1):
+def contact_links(html, base_url, limit=MAX_CONTACT_LINKS):
     """Contact-ish links from a page, best first, as same-site URLs.
 
     Same-site only, and deliberately so: an "Impressum" on a Czech
@@ -638,6 +657,16 @@ PAGE_KINDS = (
     ("career", re.compile(
         r"(?i)karier|kari[eé]r|volna-?mist|voln[aá].?m[ií]st|nabidka-?prace|"
         r"prace-?u-?nas|\bjobs?\b|career|zamestnani|nabor", ), 2),
+    # Certificates must be tested BEFORE "about" and "production":
+    # classify_link returns the first pattern that matches, and Czech
+    # sites file the certificate page under the company profile -
+    # /cs/firemni-profil/certifikace/ matched "profil" in the about
+    # pattern and was swallowed by a category whose budget was already
+    # spent, so the page was never fetched at all. The more specific
+    # category has to be asked first.
+    ("certificates", re.compile(
+        r"(?i)certifik|certificate|osvedcen|osv[eě]d[cč]en|jakost|kvalit|quality|"
+        r"ke-?stazen[ií]|ke-?sta[zž]en", ), 2),
     ("production", re.compile(
         r"(?i)vyrob|v[yý]rob|sluzb|slu[zž]b|produkt|technolog|strojni-?park|"
         r"strojov|co-?delame|zamereni|sortiment", ), 3),
