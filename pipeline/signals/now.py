@@ -247,7 +247,17 @@ def drop_reentries(events):
     return [e for e in events if (e.get("name"), e["date"]) not in paired]
 
 
-def find(company, history, window_days=30, today=None):
+# EU subsidies are published monthly and lag by weeks, so a 7-day
+# window - the cadence of the weekly run - matches nothing from this
+# source, ever. Measured on the 2026-08 file: newest signing date was
+# 2026-07-23, a month old on arrival, and the yield only becomes
+# non-zero at ~60 days. The subsidy window is therefore deliberately
+# decoupled from the registry/vacancy one rather than sharing it.
+SUBSIDY_WINDOW = 120
+
+
+def find(company, history, window_days=30, today=None, subsidies=None,
+         subsidy_window=SUBSIDY_WINDOW):
     """Every dated NOW event for one company, tagged with confidence.
 
     `confidence` is not a score - it is a visible flag for the one
@@ -264,6 +274,20 @@ def find(company, history, window_days=30, today=None):
         if event["confidence"]:
             events.append(event)
 
+    # Subsidies use their own, much wider window - see SUBSIDY_WINDOW.
+    # Passing `subsidies` is optional so that callers which have not
+    # loaded the file still get registry and vacancy events rather than
+    # an import error.
+    if subsidies:
+        from pipeline.sources.dotace_eu import funding_events
+        # Only subsidies aimed at how the company produces count as a
+        # reason to call. A grant for solar panels or a trade fair is
+        # true, dated and irrelevant; and a grant to implement an ERP
+        # means the opposite of a lead. Both are dropped here rather
+        # than left for scoring to misread.
+        events += [e for e in funding_events(company["ico"], subsidies, subsidy_window, today)
+                   if e["is_signal"]]
+
     events.sort(key=lambda e: e["age_days"])
     return events
 
@@ -277,6 +301,7 @@ EVENT_SOURCE = {
     "owner_joined":       ("ares", "ekonomicke-subjekty-vr"),
     "owner_departed":     ("ares", "ekonomicke-subjekty-vr"),
     "management_vacancy": ("mpsv", None),
+    "subsidy_signed":     ("dotace_eu", None),
 }
 
 
@@ -284,6 +309,12 @@ def describe(event):
     """One human sentence per event - what the salesperson actually reads."""
     if event["kind"] == "management_vacancy":
         return f"posted a management/planning vacancy: {event.get('title') or event['isco']}"
+    if event["kind"] == "subsidy_signed":
+        try:
+            millions = f"{float(event.get('total_czk') or 0) / 1e6:.1f} M CZK"
+        except (TypeError, ValueError):
+            millions = "amount unknown"
+        return f"signed an EU subsidy ({millions}): {event.get('project', '')[:90]}"
     who = event.get("name") or "someone"
     role = f" ({event['role']})" if event.get("role") else ""
     verb = {
@@ -307,31 +338,92 @@ def snapshot_for(archive, ico, kind):
     return row["id"] if row else None
 
 
-def record(archive, company, history, window_days=30, run_id=None, today=None):
+# How much of the archived document to quote around the anchor. The
+# registry stores a person as {"datumZapisu": ..., "datumVymazu": ...,
+# "typAngazma": ..., "clenstvi": {... "jmeno": X, "prijmeni": Y}}, so
+# the dates sit BEFORE the name - the window has to reach back far
+# enough to carry them, or the quote proves the person exists without
+# proving when anything happened to them.
+QUOTE_BACK = 320
+QUOTE_FORWARD = 90
+
+
+def evidence_quote(event, text):
+    """A verbatim substring of `text` that backs `event`, or None.
+
+    The first version of record() put json.dumps(event) in the quote
+    column and marked the claim a fact. That string is this module's own
+    construction and appears nowhere in the ARES response, whose shape is
+    completely different - so re-verifying the archive found 100 of 172
+    stored "facts" unprovable, every one of them a NOW event. The
+    verifier had not failed; these claims had never been through it.
+
+    The irony is that the registry is the *best*-evidenced source in the
+    project - the log calls it the one signal that cannot be
+    hallucinated - and it was the only one asserting rather than
+    proving. What is quoted now is the raw fragment of the archived
+    document itself: ugly to read, but it is what the source actually
+    says, and a card can render `value` while the quote stays checkable.
+    """
+    if not text:
+        return None
+
+    anchors = []
+    if event["kind"] == "subsidy_signed":
+        anchors.append((event.get("project") or "")[:80])
+    elif event["kind"] == "management_vacancy":
+        anchors += [event.get("title") or "", str(event.get("isco") or "")]
+    else:
+        # Surname alone is the reliable anchor: ARES splits a person into
+        # separate "jmeno"/"prijmeni" fields, so the full name as the
+        # event carries it ("JAROSLAV JEDINÁK") is never one substring.
+        parts = (event.get("name") or "").split()
+        if parts:
+            anchors.append(f'"prijmeni": "{parts[-1]}"')
+            anchors.append(parts[-1])
+
+    for anchor in anchors:
+        if not anchor:
+            continue
+        position = text.find(anchor)
+        if position < 0:
+            continue
+        start = max(0, position - QUOTE_BACK)
+        end = min(len(text), position + len(anchor) + QUOTE_FORWARD)
+        return text[start:end]
+    return None
+
+
+def record(archive, company, history, window_days=30, run_id=None, today=None,
+           subsidies=None):
     """Turn one company's events into claims in the evidence store.
 
-    Every event becomes a claim with state 'fact': a registry date and a
-    posting date are not interpretations, they are what the source says.
-    Whether the event *means* the company is worth calling is a scoring
-    question, and scoring is not this module's job.
+    Each event goes through evidence/verify.py like everything else. A
+    registry date is not an interpretation - but "not an interpretation"
+    is a reason to expect the quote to be found, not a reason to skip
+    looking for it. When the anchor cannot be located in the archived
+    document the event is still recorded, as an inference rather than a
+    fact, so the signal is not lost and is not overstated either.
 
     An event whose snapshot is missing is skipped rather than recorded
     unsourced - the schema would reject it anyway, and silently dropping
     the foreign key would defeat the point of having one.
     """
+    from pipeline.evidence.verify import check
+
     written, orphaned = 0, 0
-    for event in find(company, history, window_days, today):
+    states = {"fact": 0, "inference": 0, "discard": 0}
+    for event in find(company, history, window_days, today, subsidies=subsidies):
         snapshot_id = snapshot_for(archive, company["ico"], event["kind"])
         if snapshot_id is None:
             orphaned += 1
             continue
-        archive.add_claim(
-            company["ico"], f"now:{event['kind']}", describe(event),
-            "fact", snapshot_id,
-            quote=json.dumps(event, ensure_ascii=False), run_id=run_id,
-        )
+        quote = evidence_quote(event, archive.text_of(snapshot_id))
+        result = check(archive, company["ico"], f"now:{event['kind']}",
+                       describe(event), quote, snapshot_id, run_id=run_id)
+        states[result["state"]] += 1
         written += 1
-    return written, orphaned
+    return written, orphaned, states
 
 
 def load_companies(path=ARES_CANDIDATES):
@@ -353,6 +445,16 @@ if __name__ == "__main__":
 
     history = load_history()
 
+    # Subsidies are loaded here rather than left to default to None.
+    # find() takes them as an optional argument so that a caller without
+    # the file still gets registry and vacancy events - convenient, and
+    # exactly how the whole EU-subsidy group went missing twice: once
+    # from scoring/select.py's gate, then again from --record, where the
+    # events simply were never written and the card's "why now" section
+    # came up empty for companies that had a perfectly good reason.
+    from pipeline.sources.dotace_eu import load as load_subsidies
+    subsidies = load_subsidies()
+
     if args.all:
         companies = {c["ico"]: c for c in load_companies()}
 
@@ -362,14 +464,19 @@ if __name__ == "__main__":
             store = Archive()
             run_id = store.start_run(note=f"now events, window {args.window}d")
             written = orphaned = firms = 0
+            totals = {"fact": 0, "inference": 0, "discard": 0}
             for company in companies.values():
-                count, missing = record(store, company, history, args.window, run_id)
+                count, missing, states = record(store, company, history, args.window,
+                                                run_id, subsidies=subsidies)
                 written += count
                 orphaned += missing
                 firms += 1 if count else 0
+                for state, n in states.items():
+                    totals[state] += n
             store.finish_run(run_id)
             print(f"{written} claims for {firms} companies; "
                   f"{orphaned} events skipped for want of a snapshot", file=sys.stderr)
+            print(f"verification: {totals}", file=sys.stderr)
         else:
             total = 0
             for ico, company in companies.items():
