@@ -15,6 +15,8 @@
 
   <div class="shell">
 
+    <section class="results" id="results" aria-live="polite"></section>
+
     <section class="panel" id="panel" aria-hidden="true">
       <header class="panel-head">
         <button class="back" id="back" type="button" aria-label="Zpět" hidden>
@@ -52,6 +54,24 @@
   </div>
 
 </main>
+
+<section class="evidence-modal" id="evidence-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="evidence-title">
+  <div class="evidence-backdrop" data-close-evidence></div>
+  <div class="evidence-dialog">
+    <header class="evidence-head">
+      <div>
+        <span class="evidence-kicker">Доказательство</span>
+        <h2 id="evidence-title">Архивированная страница</h2>
+      </div>
+      <button class="evidence-close" type="button" aria-label="Закрыть" data-close-evidence>×</button>
+    </header>
+    <p class="evidence-meta" id="evidence-meta"></p>
+    <blockquote class="evidence-quote" id="evidence-quote"></blockquote>
+    <div class="evidence-actions">
+      <a id="evidence-full" class="evidence-full" href="#" target="_blank" rel="noreferrer">Открыть полный текст</a>
+    </div>
+  </div>
+</section>
 
 <script src="app.js"></script>
 </body>

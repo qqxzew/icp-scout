@@ -16,6 +16,13 @@ const el = {
   cancel: document.getElementById("cancel"),
   save: document.getElementById("save"),
   summary: document.getElementById("summary"),
+  run: document.getElementById("run"),
+  results: document.getElementById("results"),
+  evidenceModal: document.getElementById("evidence-modal"),
+  evidenceTitle: document.getElementById("evidence-title"),
+  evidenceMeta: document.getElementById("evidence-meta"),
+  evidenceQuote: document.getElementById("evidence-quote"),
+  evidenceFull: document.getElementById("evidence-full"),
 };
 
 let data = { nace: null, sizes: null, regions: null };
@@ -183,7 +190,7 @@ el.save.addEventListener("click", async () => {
   el.save.disabled = true;
   el.discard.textContent = "Ukládám…";
   try {
-    const response = await fetch(API + "/api/filters", {
+    const response = await fetch(API + "/api/icp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -216,6 +223,164 @@ el.cancel.addEventListener("click", () => {
   draft = clone(saved);
   go(view.name, view.division);
 });
+
+el.run.addEventListener("click", loadResults);
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-snapshot]");
+  if (link) {
+    event.preventDefault();
+    showEvidence(link.dataset.snapshot, link.dataset.quote, link.dataset.label);
+  }
+  if (event.target.closest("[data-close-evidence]")) closeEvidence();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeEvidence();
+});
+
+async function showEvidence(snapshotId, quote, label) {
+  el.evidenceModal.setAttribute("aria-hidden", "false");
+  el.evidenceModal.classList.add("is-open");
+  el.evidenceTitle.textContent = label || "Архивированная страница";
+  el.evidenceMeta.textContent = `Snapshot #${snapshotId} · загружаю фрагмент`;
+  el.evidenceQuote.textContent = "Загружаю доказательство…";
+  el.evidenceFull.href = `${API}/api/snapshot/${encodeURIComponent(snapshotId)}`;
+
+  try {
+    const response = await fetch(el.evidenceFull.href);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text = await response.text();
+    el.evidenceQuote.textContent = excerpt(text, quote);
+    el.evidenceMeta.textContent = `Snapshot #${snapshotId} · фрагмент архивированной страницы`;
+  } catch (error) {
+    el.evidenceQuote.textContent = "Не удалось загрузить архивированную страницу.";
+    console.error("Could not load evidence", error);
+  }
+}
+
+function closeEvidence() {
+  if (!el.evidenceModal.classList.contains("is-open")) return;
+  el.evidenceModal.classList.remove("is-open");
+  el.evidenceModal.setAttribute("aria-hidden", "true");
+}
+
+function excerpt(text, quote) {
+  const cleanText = text.replace(/\s+/g, " ").trim();
+  const cleanQuote = (quote || "").replace(/\s+/g, " ").trim();
+  const position = cleanQuote && cleanQuote !== "..." ? cleanText.indexOf(cleanQuote) : -1;
+  if (position < 0) return cleanText.slice(0, 520) + (cleanText.length > 520 ? "…" : "");
+
+  const start = Math.max(0, position - 180);
+  const end = Math.min(cleanText.length, position + cleanQuote.length + 260);
+  return `${start ? "…" : ""}${cleanText.slice(start, end)}${end < cleanText.length ? "…" : ""}`;
+}
+
+async function loadResults() {
+  el.run.disabled = true;
+  el.results.innerHTML = '<p class="results-status">Načítám výsledky…</p>';
+
+  try {
+    const response = await fetch(API + "/api/results");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const payload = await response.json();
+    if (!Array.isArray(payload.companies)) {
+      throw new Error("Invalid results format");
+    }
+    renderResults(payload);
+  } catch (error) {
+    el.results.innerHTML = '<p class="results-status results-error">Výsledky nejsou dostupné</p>';
+    console.error("Could not load results", error);
+  } finally {
+    el.run.disabled = false;
+  }
+}
+
+function renderResults(payload) {
+  const companies = payload.companies.slice(0, 5);
+  if (!companies.length) {
+    el.results.innerHTML = '<p class="results-status">Poslední běh nemá žádné firmy</p>';
+    return;
+  }
+
+  el.results.innerHTML = `
+    <div class="results-head">
+      <span>Poslední běh</span>
+      <span>${escapeHtml(payload.generated_at || "")}</span>
+    </div>
+    ${companies.map((company, index) => resultCard(company, index + 1)).join("")}`;
+}
+
+function resultCard(company, rank) {
+  const fit = company.fit || {};
+  const contact = company.contact || {};
+
+  return `
+    <article class="result-card">
+      <div class="result-rank">0${rank}</div>
+      <div class="result-main">
+        <h2>${escapeHtml(company.name || company.ico || "Без названия")}</h2>
+        <p class="result-ico">IČO ${escapeHtml(company.ico || "—")}</p>
+        <section class="result-section">
+          <h3>FIT</h3>
+          <div class="result-fit">
+            <span>Размер: ${escapeHtml(fit.size || "неизвестен")}</span>
+            <span>NACE: ${escapeHtml(fit.nace || "неизвестен")}</span>
+            <span>${fit.distance_km == null ? "Расстояние неизвестно" : `Расстояние: ${escapeHtml(String(fit.distance_km))} km`}</span>
+          </div>
+        </section>
+        ${renderSignals("NOW", company.now, formatNowSignal)}
+        ${renderSignals("PAIN", company.pain, formatPainSignal)}
+        ${renderContact(contact)}
+      </div>
+    </article>`;
+}
+
+function renderSignals(title, signals, formatter) {
+  if (!Array.isArray(signals) || !signals.length) return "";
+  return `
+    <section class="result-section">
+      <h3>${title}</h3>
+      <ul class="result-signals">${signals.map(formatter).join("")}</ul>
+    </section>`;
+}
+
+function formatNowSignal(signal) {
+  return `<li><span>${escapeHtml(signal.kind || "Событие")}</span>${signal.date ? ` · ${escapeHtml(signal.date)}` : ""}${claimLink(signal)}</li>`;
+}
+
+function formatPainSignal(signal) {
+  const state = signal.state || "inference";
+  return `<li><span>${escapeHtml(signal.claim || "Сигнал")}</span><em class="claim-state ${state}">${escapeHtml(state)}</em>${signal.quote && signal.quote !== "..." ? `<q>${escapeHtml(signal.quote)}</q>` : ""}${claimLink(signal)}</li>`;
+}
+
+function claimLink(signal) {
+  if (signal.snapshot_id == null) return "";
+  const quote = signal.quote && signal.quote !== "..." ? signal.quote : "";
+  const label = signal.claim || signal.kind || "Архивированная страница";
+  return ` <button class="evidence-link" type="button" data-snapshot="${escapeHtml(signal.snapshot_id)}" data-quote="${escapeHtml(quote)}" data-label="${escapeHtml(label)}">подробнее</button>`;
+}
+
+function renderContact(contact) {
+  if (!contact.name && !contact.email && !contact.phone) return "";
+  const channels = [contact.email, contact.phone].filter(Boolean).map(escapeHtml).join(" · ");
+  return `
+    <section class="result-section result-contact">
+      <h3>CONTACT</h3>
+      <p><b>${escapeHtml(contact.name || "Контакт")}</b>${contact.role ? ` · ${escapeHtml(contact.role)}` : ""}</p>
+      ${channels ? `<p>${channels}</p>` : ""}
+    </section>`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  }[character]));
+}
 
 // The footer follows the edits, not the screen: once something is
 // changed the save button stays reachable from every view, including
