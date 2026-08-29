@@ -233,11 +233,19 @@ def parse_vr(data):
     directors, departed_directors = [], []
     for organ in record.get("statutarniOrgany", []):
         for member in organ.get("clenoveOrganu", []):
+            person = member.get("fyzickaOsoba", {})
             entry = {
-                "name": full_name(member.get("fyzickaOsoba", {})),
+                "name": full_name(person),
                 "role": member.get("clenstvi", {}).get("funkce", {}).get("nazev"),
                 "since": member.get("datumZapisu"),
             }
+            # Where the director lives, as the register states it.
+            # NB: directors nest fyzickaOsoba directly under clenoveOrganu,
+            # while owners nest it under .osoba - different shapes in the
+            # same response, so the paths cannot be shared.
+            country = (person.get("adresa") or {}).get("kodStatu")
+            if country:
+                entry["country"] = country
             if member.get("datumVymazu"):
                 entry["until"] = member["datumVymazu"]
                 departed_directors.append(entry)
@@ -249,11 +257,21 @@ def parse_vr(data):
         for owner in organ.get("spolecnik", []):
             # An owner can be a person or another company.
             osoba = owner.get("osoba", {})
+            legal = osoba.get("pravnickaOsoba", {})
             name = (
                 full_name(osoba.get("fyzickaOsoba", {}))
-                or osoba.get("pravnickaOsoba", {}).get("obchodniJmeno")
+                or legal.get("obchodniJmeno")
             )
             entry = {"name": name, "since": owner.get("datumZapisu")}
+            # Where a corporate owner is registered, straight from the
+            # register: "kodStatu": "DE". Read off the field rather than
+            # the legal-form suffix in the name, which cannot distinguish
+            # a Czech Societas Europaea from a German one.
+            if legal:
+                entry["is_legal_entity"] = True
+                country = (legal.get("adresa") or {}).get("kodStatu")
+                if country:
+                    entry["country"] = country
             if owner.get("datumVymazu"):
                 entry["until"] = owner["datumVymazu"]
                 departed_owners.append(entry)
