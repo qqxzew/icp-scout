@@ -48,6 +48,7 @@ Run:
 """
 
 import argparse
+import re
 
 from pipeline.evidence.archive import Archive, normalize
 
@@ -56,6 +57,13 @@ from pipeline.evidence.archive import Archive, normalize
 # independently on each end (not paired) since the model is not
 # consistent about which style it reaches for.
 _WRAPPING_QUOTE_CHARS = '"„“”‘’\''
+
+# "…" and "..." at the very end versus anywhere else. The position is
+# the whole distinction: at the end it means the sentence continues, in
+# the middle it means two pieces of text were joined that are not
+# adjacent in the source.
+_TRAILING_ELLIPSIS = re.compile(r"(?:\.{2,}|…)\s*$")
+_INTERNAL_ELLIPSIS = re.compile(r"(?:\.{2,}|…)")
 
 
 def _unwrap(quote):
@@ -69,19 +77,62 @@ def _unwrap(quote):
 def find_quote(quote, snapshot_text):
     """The form of `quote` actually present in `snapshot_text`, or None.
 
-    Tries `quote` as given first; if that fails, tries it with one layer
-    of wrapping quote-mark punctuation stripped (see module docstring).
-    A pure function - no archive, no database - so it can be unit tested
-    against a string without spinning up a store.
+    Three attempts, each strictly a containment check, each justified by
+    a false negative found by auditing every discard in the archive by
+    hand (5 of them; 3 turned out to be true statements thrown away):
+
+    1. the quote as given
+    2. one layer of wrapping quote-mark punctuation stripped - the model
+       marks its own citation typographically (see module docstring)
+    3. case-insensitively. TNS SERVIS's discard differed from the source
+       by exactly one character: the model wrote "vyvíjíme" where the
+       page began a sentence with "Vyvíjíme". 130 characters identical,
+       rejected on a capital letter. Case-folding cannot turn an
+       invention into a match - two texts that differ only in case say
+       the same thing - so this costs nothing and recovers real
+       evidence.
+
+    What is deliberately NOT done: matching a quote that contains an
+    internal ellipsis. That is the splice - REMET's discard joined one
+    real address to two that appear nowhere, using "..." as the joint -
+    and accepting it would let a model assemble a plausible sentence out
+    of parts that never sat together. A trailing ellipsis is honest
+    truncation; an internal one is construction. The distinction is the
+    difference between quoting and writing.
+
+    The stored claim always carries the form confirmed present in the
+    text, never the model's decorated version.
     """
     if not quote or not snapshot_text:
         return None
+
     normalized_text = normalize(snapshot_text)
-    if normalize(quote) in normalized_text:
-        return quote
+    candidates = [quote]
     unwrapped = _unwrap(quote)
-    if unwrapped and normalize(unwrapped) in normalized_text:
-        return unwrapped
+    if unwrapped:
+        candidates.append(unwrapped)
+
+    # A trailing ellipsis is the model saying "and it continues" - the
+    # text before it is still a real, contiguous span. An internal one
+    # is the model joining passages that never sat together, so a quote
+    # carrying one is never repaired, only rejected.
+    for candidate in list(candidates):
+        trimmed = _TRAILING_ELLIPSIS.sub("", candidate).rstrip()
+        if trimmed != candidate and not _INTERNAL_ELLIPSIS.search(trimmed):
+            candidates.append(trimmed)
+
+    for candidate in candidates:
+        if normalize(candidate) in normalized_text:
+            return candidate
+
+    lowered_text = normalized_text.lower()
+    for candidate in candidates:
+        normalized = normalize(candidate)
+        position = lowered_text.find(normalized.lower())
+        if position >= 0:
+            # Return what the SOURCE says, not what the model wrote: the
+            # quote on the card should read as the page reads.
+            return normalized_text[position:position + len(normalized)]
     return None
 
 
