@@ -45,7 +45,7 @@ from pipeline.sources.website import (
 )
 
 SITES = "data/raw/websites.jsonl"
-COMPANIES = "data/raw/ares_candidates.jsonl"
+COMPANIES = "data/raw/ares_candidates_v2.jsonl"
 OUTPUT = "data/raw/contacts.jsonl"
 
 # How much text around an anchor counts as "the same block". Measured on

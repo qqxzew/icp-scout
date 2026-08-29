@@ -239,7 +239,7 @@ def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events):
 # ---------------------------------------------------------------------------
 
 
-def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None):
+def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=None):
     """Full weekly selection: FIT (already done) -> NOW gate -> PAIN rank.
 
     Returns the ranked list of NOW-qualified companies, longest first;
@@ -254,7 +254,14 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None):
     contacts = load_jsonl(CONTACTS)
     vacancies_by_ico = load_mpsv_by_ico()
 
-    qualified = now_qualified(companies, history, window_days)
+    # run.py has already run the gate to decide who was worth enriching,
+    # so it hands the result in rather than paying for a second pass over
+    # 3299 companies. Recomputing was not just wasteful - two gates with
+    # separately-passed arguments are two chances to disagree about who
+    # qualified, and the card would then be built for one set while the
+    # ranking described another.
+    if qualified is None:
+        qualified = now_qualified(companies, history, window_days)
     by_ico = {c["ico"]: c for c in companies}
 
     ranked = [

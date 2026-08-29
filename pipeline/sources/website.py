@@ -70,7 +70,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-CANDIDATES = Path("data/raw/ares_candidates.jsonl")
+CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
 OUTPUT = Path("data/raw/websites.jsonl")
 
 TIMEOUT = 10

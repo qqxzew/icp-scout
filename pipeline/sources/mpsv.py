@@ -46,7 +46,7 @@ from pathlib import Path
 
 URL = "https://data.mpsv.cz/od/soubory/volna-mista/volna-mista.json.gz"
 CACHE = Path("data/raw/mpsv_vacancies.jsonl")
-CANDIDATES = Path("data/raw/ares_candidates.jsonl")
+CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
 
 USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
 TIMEOUT = 300

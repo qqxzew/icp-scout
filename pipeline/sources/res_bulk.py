@@ -30,10 +30,17 @@ Run manually:
 import argparse
 import csv
 import sys
+import urllib.request
 from pathlib import Path
 
 
 DEFAULT_PATH = Path("data/raw/res_data.csv")
+URL = "https://opendata.csu.gov.cz/soubory/od/od_org03/res_data.csv"
+
+# The published file is ~517 MB. Used as a floor for "did this actually
+# finish", not as an exact expectation - CSU republishes twice a month
+# and the size drifts.
+MIN_BYTES = 400_000_000
 
 # CSU 579 codes covering the ICP size range (50-199 employees).
 # 220/230 are the lower boundary the ICP still accepts (from 20 people).
@@ -72,6 +79,56 @@ ICP_NACE = (
 )
 
 
+def download(path=DEFAULT_PATH, url=URL, force=False):
+    """Fetch the RES export, atomically. Returns the path.
+
+    Written to a .part file and renamed only once the whole body has
+    arrived. That is the entire point: a 517 MB download interrupted
+    halfway would otherwise leave a file that exists, opens cleanly, and
+    parses as valid CSV - just with a chunk of the register missing. The
+    pipeline would then quietly produce a short candidate list, and the
+    mistake would surface days later as "fewer companies than expected"
+    with nothing pointing at the cause. A .part file that never got
+    renamed is unmistakable.
+
+    Streamed in chunks for the same reason nothing else here loads the
+    file: half a gigabyte does not belong in memory.
+    """
+    path = Path(path)
+    if path.exists() and path.stat().st_size >= MIN_BYTES and not force:
+        print(f"res_bulk: {path} already present "
+              f"({path.stat().st_size / 1e6:.0f} MB), skipping", file=sys.stderr)
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    print(f"res_bulk: downloading {url}", file=sys.stderr)
+
+    request = urllib.request.Request(url, headers={"User-Agent": "icp-scout/0.1"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        expected = int(response.headers.get("Content-Length") or 0)
+        written = 0
+        with open(partial, "wb") as sink:
+            while chunk := response.read(1 << 20):
+                sink.write(chunk)
+                written += len(chunk)
+                if expected:
+                    print(f"\r  {written / 1e6:6.0f} / {expected / 1e6:.0f} MB "
+                          f"({100 * written / expected:.0f}%)", end="", file=sys.stderr)
+        print(file=sys.stderr)
+
+    if written < MIN_BYTES:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"res_bulk: got only {written / 1e6:.0f} MB, expected at least "
+            f"{MIN_BYTES / 1e6:.0f} - refusing to keep a truncated register"
+        )
+
+    partial.replace(path)
+    print(f"res_bulk: saved {path} ({written / 1e6:.0f} MB)", file=sys.stderr)
+    return path
+
+
 def iter_rows(path=DEFAULT_PATH):
     """Stream the CSV row by row as dicts.
 
@@ -81,8 +138,8 @@ def iter_rows(path=DEFAULT_PATH):
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Download it first:\n"
-            f"  curl -o {path} https://opendata.csu.gov.cz/soubory/od/od_org03/res_data.csv"
+            f"{path} not found. Download it:\n"
+            f"  python -m pipeline.sources.res_bulk --download"
         )
 
     with open(path, encoding="utf-8", newline="") as handle:
@@ -167,7 +224,14 @@ if __name__ == "__main__":
     parser.add_argument("--include-terminated", action="store_true", help="keep dead subjects")
     parser.add_argument("--count", action="store_true", help="print only how many matched")
     parser.add_argument("--limit", type=int, help="stop after N matches")
+    parser.add_argument("--download", action="store_true",
+                        help="fetch res_data.csv (~517 MB) and exit")
+    parser.add_argument("--force", action="store_true", help="re-download even if present")
     args = parser.parse_args()
+
+    if args.download:
+        download(args.file, force=args.force)
+        raise SystemExit
 
     criteria = {
         "nace": args.nace,

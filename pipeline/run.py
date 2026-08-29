@@ -119,9 +119,8 @@ def requirements():
     return [
         Need(ENV_FILE, "OpenAI API key", ("agents",),
              hint="create .env with OPENAI_API_KEY=sk-... (see .env.example)"),
-        Need(RES_BULK, "RES bulk export, 517 MB", ("bootstrap",), min_mb=400,
-             hint="curl -o data/raw/res_data.csv "
-                  "https://opendata.csu.gov.cz/soubory/od/od_org03/res_data.csv"),
+        Need(RES_BULK, "RES bulk export, 517 MB", ("bootstrap",), min_mb=400, minutes=10,
+             build=[sys.executable, "-m", "pipeline.sources.res_bulk", "--download"]),
         # Everything below is derived, and each is derived from the one
         # above it - which is why the list is ordered rather than a dict.
         Need(CANDIDATES, "ICP candidates enriched through ARES", ("refresh", "gate", "select"),
@@ -263,18 +262,32 @@ def stage_refresh(archive, run_id, days):
 
 
 def stage_gate(window_days):
-    """NOW: who has a dated reason this week. Everything else stops here."""
+    """NOW: who has a dated reason this week. Everything else stops here.
+
+    The negative filter runs here, before the gate rather than after it,
+    for the reason the plan gives: throw work away while it is still
+    cheap. A company in insolvency matches every line of the ICP and
+    cannot buy anything, and letting it through would spend a site crawl
+    and an LLM pass to produce a card nobody can act on.
+    """
+    from pipeline.filters.negative import EXCLUDE, verdict
     from pipeline.signals.now import find, load_companies, load_history
     from pipeline.sources.dotace_eu import load as load_subsidies
 
     companies = list(load_companies(CANDIDATES))
     history, subsidies = load_history(), load_subsidies()
 
-    qualified = {}
+    qualified, excluded = {}, 0
     for company in companies:
+        if verdict(company) == EXCLUDE:
+            excluded += 1
+            continue
         events = find(company, history, window_days, subsidies=subsidies)
         if events:
             qualified[company["ico"]] = events
+
+    print(f"  {excluded} excluded by negative filters "
+          f"(insolvency, liquidation)", file=sys.stderr)
     print(f"  {len(qualified)} of {len(companies)} companies have a dated event",
           file=sys.stderr)
     return qualified
@@ -407,8 +420,7 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
 
     print("\n[select]", file=sys.stderr)
     from pipeline.scoring.select import run as select_run
-    _, ranked = select_run(window_days, top, archive=archive)
-    ranked = [r for r in ranked if r["ico"] in qualified]
+    _, ranked = select_run(window_days, top, archive=archive, qualified=qualified)
     report["stages"]["select"] = len(ranked)
 
     print("\n[cards]", file=sys.stderr)
