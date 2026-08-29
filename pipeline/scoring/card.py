@@ -192,8 +192,26 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
     ]
 
     site = websites.get(ico, {})
-    people = [p for p in ((contacts.get(ico) or {}).get("people") or [])
-              if p.get("email") or p.get("phone")]
+
+    # People come from the REGISTER, and a channel is attached when one
+    # was found - not the other way round. Filtering on "has an email or
+    # a phone" hid the person entirely whenever no channel turned up,
+    # which threw away the one thing this pipeline knows about almost
+    # every company: who is legally allowed to sign. Names are present
+    # for 99.9 % of the base, a channel for far fewer, so the empty cell
+    # belongs in the channel column, not in place of the row.
+    by_name = {p.get("name"): p for p in ((contacts.get(ico) or {}).get("people") or [])}
+    people = []
+    for director in company.get("directors") or []:
+        found = by_name.get(director.get("name")) or {}
+        people.append({
+            "name": director.get("name"),
+            "role_registered": director.get("role"),
+            "since": director.get("since"),
+            "email": found.get("email"),
+            "phone": found.get("phone"),
+            "quote": found.get("quote"),
+        })
 
     return {
         "ico": ico,
@@ -313,12 +331,17 @@ def render(card):
     people = card["contacts"]
     if people:
         for person in people[:4]:
-            channel = person.get("email") or person.get("phone") or ""
             role = person.get("role_registered") or ""
-            out.append(row("Jednatel", f"{person.get('name')} · {role} · {channel}".strip(" ·"), vr))
+            since = f", od {person['since']}" if person.get("since") else ""
+            out.append(row("Jednatel", f"{person.get('name')} · {role}{since}".strip(" ·"), vr))
+            # Separate row on purpose: the name is a register fact, the
+            # channel is something we had to find on a page and often
+            # did not. Printing them on one line would let a missing
+            # channel look like a missing person.
+            out.append(row("  ↳ kanál", person.get("email") or person.get("phone") or "",
+                           card["website"].get("domain") or ""))
     else:
         out.append(row("Jednatel", "", vr))
-        out.append(row("Kanál na jednatele", ""))
 
     if card["why_now"]:
         for event in card["why_now"]:
