@@ -365,6 +365,46 @@ class Archive:
             self.db.commit()
             return cursor.lastrowid
 
+    # -- delivered: what the salesperson has already been handed --------
+
+    def mark_delivered(self, ico, run_id):
+        """Record that this company went out in this run.
+
+        The table has existed since the first schema and stayed empty -
+        nothing wrote to it, so requirement 8 of the brief ("see what is
+        in what state, including what was already handed over") had a
+        column and no content.
+
+        INSERT OR IGNORE rather than a duplicate check, because the
+        primary key is already (ico, run_id): handing the same company
+        over twice inside one run is the same fact, not a second one.
+
+        Note what this does NOT mean. Per the log (22.1) a company leaves
+        the pool when the salesperson actually writes to it, not when it
+        appears on a card - so this row says "was shown", and the
+        except-list that governs re-offering is a separate, later thing.
+        """
+        with self._lock:
+            self.db.execute(
+                "INSERT OR IGNORE INTO delivered (ico, run_id, delivered_at)"
+                " VALUES (?, ?, ?)",
+                (str(ico).zfill(8), run_id, now()),
+            )
+            self.db.commit()
+
+    def delivered(self, ico=None, run_id=None):
+        """What was handed over - filtered by company, by run, or neither."""
+        if ico is not None:
+            ico = str(ico).zfill(8)
+        with self._lock:
+            return self.db.execute(
+                "SELECT d.*, r.started_at, r.note FROM delivered d"
+                " JOIN run r ON r.id = d.run_id"
+                " WHERE (? IS NULL OR d.ico = ?) AND (? IS NULL OR d.run_id = ?)"
+                " ORDER BY d.delivered_at DESC",
+                (ico, ico, run_id, run_id),
+            ).fetchall()
+
     def discards(self, ico=None, kind=None):
         # Zero-padded exactly like claims() and every write path. Without
         # this, discards("207675") returned nothing while the row sat
