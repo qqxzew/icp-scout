@@ -133,6 +133,17 @@ PROJECT_KINDS = (
         r"digitaliz", r"automatiz", r"robotiz", r"podnikove procesy",
         r"digitalni transformac",
     )),
+    # Developing something, not installing it. Checked BEFORE capacity
+    # because the wording overlaps and the meaning does not: "Prototyp -
+    # Smart Motor Line - chytrá modulární výrobní linka" matched
+    # `vyrobni linka` and was filed as capacity, i.e. as a company
+    # getting more units to schedule - when the line is the product
+    # being developed, not new plant on its own shop floor. Measured:
+    # 3 of the 12 capacity projects (25 %) were R&D, and capacity is a
+    # signal kind, so a quarter of that signal was wrong. The other five
+    # projects this reorder moves come from energy and training, both
+    # non-signal, so nothing else about selection changes.
+    ("research", (r"vyzkum", r"\bvyvoj", r"\bvav\b", r"inovac", r"prototyp")),
     # Growing capacity - more units to schedule, which is ICP sign 1.
     ("capacity", (
         r"rozsireni.*kapacit", r"porizeni.*technologi", r"nova.*hala",
@@ -142,7 +153,6 @@ PROJECT_KINDS = (
     ("energy", (r"energetick", r"uspor", r"fotovoltai", r"tepeln", r"emis")),
     ("training", (r"vzdelavan", r"skoleni", r"kompetenc")),
     ("marketing", (r"veletr", r"vystav", r"zahranicn", r"export", r"marketing")),
-    ("research", (r"vyzkum", r"\bvyvoj", r"inovac", r"prototyp")),
 )
 
 # Which project kinds are worth surfacing as a NOW event at all. The
@@ -173,7 +183,39 @@ def classify_project(name):
 # the weekly run - would match nothing, ever. This is the narrowest
 # window at which the source can produce anything at all, and callers
 # should treat it as "recently funded", not "funded this week".
+#
+# The obvious-looking correction, "the lag is only ~37 days so narrow
+# the window to 40", was measured and is wrong: at 40, 60 and even 90
+# days this source yields ZERO companies. The lag eats the near end of
+# any window, and signal-kind projects are rare enough that the far end
+# is where the few live ones sit. Narrowing does not make the signal
+# sharper, it deletes it.
+#
+# So the window stays wide and the honesty moves into the event instead:
+# publication_lag() measures how far behind the file actually is, and
+# every event carries `fresh`, which says whether it was signed within
+# reach of when we could first have known about it. A 92-day-old grant
+# is a true fact and a weak "why now" - the card has to be able to show
+# that difference rather than have this module pretend it away.
 MIN_USEFUL_WINDOW = 120
+
+# How long after we could first have learned of a grant it still counts
+# as a reason to call. Added to the measured lag, not to zero.
+FRESH_AFTER_PUBLICATION = 30
+
+
+def publication_lag(subsidies, today=None):
+    """Days between today and the newest signature in the file.
+
+    Measured rather than assumed: this is the floor on how stale the
+    source is, and it moves every time the monthly file is replaced.
+    """
+    today = today or date.today()
+    signed = [p["signed"] for projects in subsidies.values()
+              for p in projects if p.get("signed")]
+    if not signed:
+        return None
+    return (today - date.fromisoformat(max(signed))).days
 
 
 def download(url=URL, path=XLSX):
@@ -340,6 +382,10 @@ def funding_events(ico, subsidies, window_days, today=None):
     months has three separate reasons to be called, not one.
     """
     today = today or date.today()
+    # Measured once per call rather than hard-coded: the file is
+    # replaced monthly, so how stale it is changes under us.
+    lag = publication_lag(subsidies, today)
+    fresh_within = (lag + FRESH_AFTER_PUBLICATION) if lag is not None else window_days
     events = []
     for project in subsidies.get(ico, []):
         if normalise_state(project["state"]) not in LIVE_STATES:
@@ -360,6 +406,11 @@ def funding_events(ico, subsidies, window_days, today=None):
             # does not mistake solar panels for a scheduling problem.
             "is_signal": purpose in SIGNAL_KINDS,
             "already_buying": purpose == "already_buying",
+            # True when the grant was signed recently enough that we are
+            # hearing about it about as soon as the source could tell
+            # us. False means it is real but old news - still worth
+            # showing, not worth opening a call with.
+            "fresh": age <= fresh_within,
             "date": project["signed"],
             "age_days": age,
             "project": project["project"][:120],

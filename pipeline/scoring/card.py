@@ -199,7 +199,12 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         "ico": ico,
         "name": company.get("name") or site.get("name"),
         "region": company.get("region"),
-        "size": company.get("employee_range"),
+        "district": company.get("district"),
+        "city": company.get("city"),
+        # ARES phrases the size band in English ("100-199 employees").
+        # The card is Czech and is read by a Czech salesperson, so the
+        # band is said in Czech here rather than passed through.
+        "size": (company.get("employee_range") or "").replace("employees", "zaměstnanců").strip(),
         "nace": company.get("nace"),
         # Empty for most companies, and that is the honest state - see
         # the module docstring.
@@ -214,66 +219,130 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
     }
 
 
-def render(card):
-    """The card as plain text - what a salesperson would actually skim."""
-    out = [f"{card['name']}   (IČO {card['ico']})",
-           f"  {card['region']} · {card['size']} · NACE {card['nace']}"]
+ARES_REST = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest"
 
-    # Two independent sources, printed as two lines rather than one
-    # merged figure - the register's number is audited, the site's is the
-    # company's own claim, and a salesperson quoting either should know
-    # which one they are holding.
+LABEL = 22          # width of the label column
+VALUE = 66          # width of the value column before the source
+
+
+def row(label, value, source="", state="fact"):
+    """One line of the card: label, value, where it came from.
+
+    `state` is what the reader is looking at, not how sure anyone feels:
+
+        fact       plain text, a quote was found in the archived source
+        inference  marked, because a model derived it rather than read it
+        empty      value is blank and stays blank
+
+    An empty value prints an empty line rather than a dash-and-excuse.
+    The one exception is turnover, where the caller passes a reason,
+    because "not required to file" and "filed as a scan" are different
+    facts about a company and collapsing them loses information
+    (hypothesis E).
+    """
+    if not value:
+        return f"  {label:<{LABEL}}"
+    mark = "~ " if state == "inference" else ""
+    text = f"{mark}{value}"
+    # Truncate two short of the column so the ellipsis never touches the
+    # source that follows - "…registr" reads as one word and hides where
+    # the claim came from, which is the one thing this column is for.
+    if len(text) > VALUE - 2:
+        text = text[:VALUE - 3] + "…"
+    return f"  {label:<{LABEL}}{text:<{VALUE}}{source}"
+
+
+def render(card):
+    """The card as a flat list - same rows, same order, for every company.
+
+    Deliberately not grouped into sections. A salesperson reading the
+    tenth card of the week should find turnover exactly where it was on
+    the first one, so the layout is a fixed sequence of rows: registry
+    facts first (cheap, structural, certain), then what had to be found
+    (site, turnover, certificates), then people, then the reason to call,
+    then the pain evidence. Every row carries where it came from, so any
+    line can be challenged on its own without reading the rest.
+    """
+    ico = card["ico"]
+    ares = f"{ARES_REST}/ekonomicke-subjekty/{ico}"
+    out = [
+        f"{card['name']}   (IČO {ico})",
+        f"  {'ověřeno: běžný text':<{LABEL}}{'~ úsudek modelu':<{VALUE}}prázdné = nezjištěno",
+        "",
+        row("IČO", ico, ares),
+        row("Sídlo", " · ".join(x for x in (card.get("city"), card.get("district"),
+                                            card.get("region")) if x), ares),
+        row("Velikost", card.get("size"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
+        row("NACE", card.get("nace"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
+    ]
+
+    # Two independent sources, two rows - never merged. The register's
+    # figure is audited; the website's is the company talking about
+    # itself, and it carries qualifiers (whose turnover, which year,
+    # annual or cumulative) that the register's does not need.
     t = card["turnover"]
     if t["value_czk"]:
-        out.append(f"  Obrat (závěrka): {t['value_czk']:,} Kč ({t['year']})".replace(",", " "))
+        out.append(row("Obrat (závěrka)", f"{t['value_czk']:,}".replace(",", " ") + f" Kč ({t['year']})",
+                       t.get("source_url") or "justice.cz"))
     else:
-        out.append(f"  Obrat (závěrka): — ({t['note'] or t['status']})")
+        out.append(row("Obrat (závěrka)", t["note"] or "", t.get("source_url") or ""))
 
     for site_turnover in card.get("turnover_site") or []:
-        out.append(f"  Obrat (web): {site_turnover['value']}")
-        if site_turnover["quote"]:
-            out.append(f"        „{site_turnover['quote'][:96]}\"  {site_turnover['url'] or ''}")
+        out.append(row("Obrat (web)", site_turnover["value"], site_turnover["url"] or "",
+                       state=site_turnover.get("state", "fact")))
+        if site_turnover.get("quote"):
+            out.append(f"  {'':<{LABEL}}„{site_turnover['quote'][:VALUE - 2]}\"")
 
-    certs = card["certificates"]
+    site = card["website"]
+    out.append(row("Web", f"{site['domain']} [{site['status']}]" if site["domain"] else "",
+                   site.get("url") or (f"https://{site['domain']}" if site["domain"] else "")))
+
+    certs = [c for c in card["certificates"] if c.get("standard")]
     if certs:
         for c in certs:
-            if not c.get("standard"):
-                continue
             bits = [c["standard"]]
             if c.get("number"):
                 bits.append(f"č. {c['number']}")
             if c.get("issuer"):
                 bits.append(f"vydal {c['issuer']}")
-            out.append(f"  Certifikát: {' · '.join(bits)}  [{c['tier']}]")
+            out.append(row("Certifikát", " · ".join(bits), c.get("source_url") or ""))
     else:
-        out.append("  Certifikát: —")
+        out.append(row("Certifikát", ""))
 
-    site = card["website"]
-    out.append(f"  Web: {site['domain'] or '—'} [{site['status']}]")
+    vr = f"{ARES_REST}/ekonomicke-subjekty-vr/{ico}"
+    people = card["contacts"]
+    if people:
+        for person in people[:4]:
+            channel = person.get("email") or person.get("phone") or ""
+            role = person.get("role_registered") or ""
+            out.append(row("Jednatel", f"{person.get('name')} · {role} · {channel}".strip(" ·"), vr))
+    else:
+        out.append(row("Jednatel", "", vr))
+        out.append(row("Kanál na jednatele", ""))
 
-    out.append("  PROČ TEĎ:")
-    for e in card["why_now"] or []:
-        out.append(f"    · {e['kind']}: {e['value']}")
-    if not card["why_now"]:
-        out.append("    · —")
+    if card["why_now"]:
+        for event in card["why_now"]:
+            out.append(row("Proč teď", f"{event['kind']}: {event['value']}",
+                           event.get("url") or "registr"))
+    else:
+        out.append(row("Proč teď", ""))
 
-    out.append("  KOMU VOLAT:")
-    for p in card["contacts"][:4]:
-        channel = p.get("email") or p.get("phone")
-        out.append(f"    · {p.get('name')} ({p.get('role_registered')}) — {channel}")
-    if not card["contacts"]:
-        out.append("    · — (jen obecný kanál)")
+    # Pain evidence last, one row per finding, quote underneath. This is
+    # the part that justifies the call, so it is the part where every
+    # line has to be checkable on its own.
+    for fact in card["evidence"]["facts"]:
+        if fact["kind"].startswith(("certificate:", "turnover_web")):
+            continue                      # already printed in their own rows
+        out.append(row(fact["kind"], fact["value"], fact["source"]))
+        if fact["quote"]:
+            out.append(f"  {'':<{LABEL}}„{fact['quote'][:VALUE - 2]}\"")
+    for guess in card["evidence"]["inferences"]:
+        out.append(row(guess["kind"], guess["value"], guess["source"], state="inference"))
 
-    out.append(f"  DŮKAZY: {len(card['evidence']['facts'])} faktů, "
-               f"{len(card['evidence']['inferences'])} úsudků, "
-               f"{card['discarded']} zahozeno")
-    for f in card["evidence"]["facts"][:6]:
-        out.append(f"    ✓ [{f['kind']}] {f['value'][:88]}")
-        if f["quote"]:
-            out.append(f"        „{f['quote'][:96]}\"  {f['source']}")
-    for i in card["evidence"]["inferences"][:3]:
-        out.append(f"    ~ [{i['kind']}] {i['value'][:88]}")
-
+    out.append("")
+    out.append(f"  {len(card['evidence']['facts'])} ověřených faktů · "
+               f"{len(card['evidence']['inferences'])} úsudků · "
+               f"{card['discarded']} zahozeno při ověření")
     return "\n".join(out)
 
 
