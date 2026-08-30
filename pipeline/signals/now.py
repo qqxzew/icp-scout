@@ -306,24 +306,32 @@ EVENT_SOURCE = {
 
 
 def describe(event):
-    """One human sentence per event - what the salesperson actually reads."""
+    """One human sentence per event - what the salesperson actually reads.
+
+    Czech, unlike the rest of this codebase, because this string is not
+    a label for a developer: it is stored verbatim as claim.value and
+    printed straight onto the card a Czech salesperson reads. The
+    project's rule is English identifiers and comments; user-facing text
+    follows the user. Found when the finished card rendered "signed an
+    EU subsidy" in the middle of an otherwise Czech dossier.
+    """
     if event["kind"] == "management_vacancy":
-        return f"posted a management/planning vacancy: {event.get('title') or event['isco']}"
+        return f"inzerát na řídící/plánovací roli: {event.get('title') or event['isco']}"
     if event["kind"] == "subsidy_signed":
         try:
-            millions = f"{float(event.get('total_czk') or 0) / 1e6:.1f} M CZK"
+            millions = f"{float(event.get('total_czk') or 0) / 1e6:.1f} mil. Kč"
         except (TypeError, ValueError):
-            millions = "amount unknown"
-        return f"signed an EU subsidy ({millions}): {event.get('project', '')[:90]}"
-    who = event.get("name") or "someone"
+            millions = "částka neuvedena"
+        return f"podepsaná dotace EU ({millions}): {event.get('project', '')[:90]}"
+    who = event.get("name") or "neuvedeno"
     role = f" ({event['role']})" if event.get("role") else ""
     verb = {
-        "director_joined": "joined the board",
-        "director_departed": "left the board",
-        "owner_joined": "became an owner",
-        "owner_departed": "ceased to be an owner",
+        "director_joined": "nastoupil do statutárního orgánu",
+        "director_departed": "opustil statutární orgán",
+        "owner_joined": "stal se vlastníkem",
+        "owner_departed": "přestal být vlastníkem",
     }[event["kind"]]
-    return f"{who}{role} {verb}"
+    return f"{who}{role} — {verb}"
 
 
 def snapshot_for(archive, ico, kind):
