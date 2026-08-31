@@ -580,7 +580,7 @@ body {
 .field input:focus { border-color: #333; }
 .field input::placeholder { color: var(--ink-faint); }
 
-/* Suggestions sit in the flow under the input rather than floating над
+/* Suggestions sit in the flow under the input rather than floating above
    it: the panel already animates its own height, so growing the list
    costs nothing and never clips inside the scroll area. */
 .suggest:not(:empty) {

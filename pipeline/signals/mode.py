@@ -247,3 +247,4 @@ def read(documents, **options):
     for text, source in documents:
         findings += scan(text, source, options.get("use_structural", True))
     return classify(findings, **options)
+d

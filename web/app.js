@@ -1,5 +1,7 @@
-const DATA = "../data/ui/";
-const API = "http://127.0.0.1:8000";
+// Both are served by api/main.py, so every path here is same-origin and
+// relative: no host to keep in sync, no CORS, nothing to change when the
+// port does.
+const DATA = "/data/ui/";
 
 const CHECK = '<svg viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3L9.5 3.8"/></svg>';
 const CHEVRON = '<svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></svg>';
@@ -29,6 +31,8 @@ let data = { nace: null, sizes: null, regions: null };
 
 // saved is what the pipeline would run with; draft is what the user is
 // editing. Nothing moves from draft to saved without the save button.
+// Both start empty and are replaced in boot() by whatever the pipeline
+// would actually run with - the last saved brief, or its built-in ICP.
 let saved = blank();
 let draft = blank();
 
@@ -130,11 +134,63 @@ async function boot() {
   nace.divisions.forEach((d) => d.codes.sort((a, b) => b.count - a.count));
 
   data = { nace, sizes, regions };
+
+  // After data: the ICP arrives as NACE divisions, and turning those
+  // into the codes the screens tick needs the codebook already loaded.
+  saved = await loadIcp();
+  draft = clone(saved);
   renderSummary();
 
   // The panel can be opened before the fetches land; redraw whatever
   // view is showing rather than leaving it empty.
   if (el.panel.dataset.open === "1") go(view.name, view.division);
+}
+
+/* the saved brief ------------------------------------------------------- */
+
+// The filters open on the ICP the pipeline already has rather than on an
+// empty form. It is asked for instead of repeated here on purpose: the
+// list of NACE divisions lives in pipeline/sources/res_bulk.py, and a
+// second copy in this file would be one nobody remembers to update.
+//
+// Without the API there is nothing to save to either, so an empty form
+// is the honest fallback - the console says why.
+async function loadIcp() {
+  try {
+    const response = await fetch("/api/icp");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return fromIcp(await response.json());
+  } catch (error) {
+    console.error("Could not load the ICP", error);
+    return blank();
+  }
+}
+
+function fromIcp(icp) {
+  const state = blank();
+  expandNace(icp.nace).forEach((code) => state.nace.add(code));
+  (icp.katpo || []).forEach((code) => state.sizes.add(code));
+  (icp.regions || []).forEach((code) => state.regions.add(code));
+
+  const location = icp.location || {};
+  state.km = location.km ?? null;
+  state.from = location.from || "";
+  state.origin = location.origin || null;
+  return state;
+}
+
+// The pipeline names whole divisions ("28"), the screens tick the codes
+// inside them ("28110"). A division stands for all of its codes - the
+// same expansion toggleDivision() does when a row is clicked, so a brief
+// written either way arrives at the same set of checkboxes.
+function expandNace(values) {
+  const codes = [];
+  for (const value of values || []) {
+    const division = data.nace.divisions.find((d) => d.code === value);
+    if (division) division.codes.forEach((code) => codes.push(code.code));
+    else codes.push(value);
+  }
+  return codes;
 }
 
 /* panel open / close ---------------------------------------------------- */
@@ -190,7 +246,7 @@ el.save.addEventListener("click", async () => {
   el.save.disabled = true;
   el.discard.textContent = "Ukládám…";
   try {
-    const response = await fetch(API + "/api/icp", {
+    const response = await fetch("/api/icp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -210,8 +266,13 @@ el.save.addEventListener("click", async () => {
     exitArmed = false;
     markDirty();
     renderSummary();
+
+    // Saving is the end of the errand, so the panel gets out of the way
+    // by itself. Only on success: a failed save has to keep the edits on
+    // screen next to the reason it failed.
+    close();
   } catch (error) {
-    el.discard.textContent = "Не удалось сохранить — проверьте API";
+    el.discard.textContent = "Uložení selhalo — běží API?";
     console.error("Could not save filters", error);
     sizePanel();
   } finally {
@@ -241,19 +302,19 @@ document.addEventListener("keydown", (event) => {
 async function showEvidence(snapshotId, quote, label) {
   el.evidenceModal.setAttribute("aria-hidden", "false");
   el.evidenceModal.classList.add("is-open");
-  el.evidenceTitle.textContent = label || "Архивированная страница";
-  el.evidenceMeta.textContent = `Snapshot #${snapshotId} · загружаю фрагмент`;
-  el.evidenceQuote.textContent = "Загружаю доказательство…";
-  el.evidenceFull.href = `${API}/api/snapshot/${encodeURIComponent(snapshotId)}`;
+  el.evidenceTitle.textContent = label || "Archivovaná stránka";
+  el.evidenceMeta.textContent = `Snapshot #${snapshotId} · načítám úryvek`;
+  el.evidenceQuote.textContent = "Načítám důkaz…";
+  el.evidenceFull.href = `/api/snapshot/${encodeURIComponent(snapshotId)}`;
 
   try {
     const response = await fetch(el.evidenceFull.href);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
     el.evidenceQuote.textContent = excerpt(text, quote);
-    el.evidenceMeta.textContent = `Snapshot #${snapshotId} · фрагмент архивированной страницы`;
+    el.evidenceMeta.textContent = `Snapshot #${snapshotId} · úryvek archivované stránky`;
   } catch (error) {
-    el.evidenceQuote.textContent = "Не удалось загрузить архивированную страницу.";
+    el.evidenceQuote.textContent = "Archivovanou stránku se nepodařilo načíst.";
     console.error("Could not load evidence", error);
   }
 }
@@ -280,7 +341,7 @@ async function loadResults() {
   el.results.innerHTML = '<p class="results-status">Načítám výsledky…</p>';
 
   try {
-    const response = await fetch(API + "/api/results");
+    const response = await fetch("/api/results");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const payload = await response.json();
@@ -319,14 +380,14 @@ function resultCard(company, rank) {
     <article class="result-card">
       <div class="result-rank">0${rank}</div>
       <div class="result-main">
-        <h2>${escapeHtml(company.name || company.ico || "Без названия")}</h2>
+        <h2>${escapeHtml(company.name || company.ico || "Bez názvu")}</h2>
         <p class="result-ico">IČO ${escapeHtml(company.ico || "—")}</p>
         <section class="result-section">
           <h3>FIT</h3>
           <div class="result-fit">
-            <span>Размер: ${escapeHtml(fit.size || "неизвестен")}</span>
-            <span>NACE: ${escapeHtml(fit.nace || "неизвестен")}</span>
-            <span>${fit.distance_km == null ? "Расстояние неизвестно" : `Расстояние: ${escapeHtml(String(fit.distance_km))} km`}</span>
+            <span>Velikost: ${escapeHtml(fit.size || "neznámá")}</span>
+            <span>NACE: ${escapeHtml(fit.nace || "neznámý")}</span>
+            <span>${fit.distance_km == null ? "Vzdálenost neznámá" : `Vzdálenost: ${escapeHtml(String(fit.distance_km))} km`}</span>
           </div>
         </section>
         ${renderSignals("NOW", company.now, formatNowSignal)}
@@ -346,19 +407,19 @@ function renderSignals(title, signals, formatter) {
 }
 
 function formatNowSignal(signal) {
-  return `<li><span>${escapeHtml(signal.kind || "Событие")}</span>${signal.date ? ` · ${escapeHtml(signal.date)}` : ""}${claimLink(signal)}</li>`;
+  return `<li><span>${escapeHtml(signal.kind || "Událost")}</span>${signal.date ? ` · ${escapeHtml(signal.date)}` : ""}${claimLink(signal)}</li>`;
 }
 
 function formatPainSignal(signal) {
   const state = signal.state || "inference";
-  return `<li><span>${escapeHtml(signal.claim || "Сигнал")}</span><em class="claim-state ${state}">${escapeHtml(state)}</em>${signal.quote && signal.quote !== "..." ? `<q>${escapeHtml(signal.quote)}</q>` : ""}${claimLink(signal)}</li>`;
+  return `<li><span>${escapeHtml(signal.claim || "Signál")}</span><em class="claim-state ${state}">${escapeHtml(state)}</em>${signal.quote && signal.quote !== "..." ? `<q>${escapeHtml(signal.quote)}</q>` : ""}${claimLink(signal)}</li>`;
 }
 
 function claimLink(signal) {
   if (signal.snapshot_id == null) return "";
   const quote = signal.quote && signal.quote !== "..." ? signal.quote : "";
-  const label = signal.claim || signal.kind || "Архивированная страница";
-  return ` <button class="evidence-link" type="button" data-snapshot="${escapeHtml(signal.snapshot_id)}" data-quote="${escapeHtml(quote)}" data-label="${escapeHtml(label)}">подробнее</button>`;
+  const label = signal.claim || signal.kind || "Archivovaná stránka";
+  return ` <button class="evidence-link" type="button" data-snapshot="${escapeHtml(signal.snapshot_id)}" data-quote="${escapeHtml(quote)}" data-label="${escapeHtml(label)}">podrobnosti</button>`;
 }
 
 function renderContact(contact) {
@@ -367,7 +428,7 @@ function renderContact(contact) {
   return `
     <section class="result-section result-contact">
       <h3>CONTACT</h3>
-      <p><b>${escapeHtml(contact.name || "Контакт")}</b>${contact.role ? ` · ${escapeHtml(contact.role)}` : ""}</p>
+      <p><b>${escapeHtml(contact.name || "Kontakt")}</b>${contact.role ? ` · ${escapeHtml(contact.role)}` : ""}</p>
       ${channels ? `<p>${channels}</p>` : ""}
     </section>`;
 }
@@ -392,7 +453,6 @@ function markDirty() {
     el.discard.textContent = "";
   }
   el.foot.hidden = !dirty;
-  el.gear.dataset.active = countActive(saved) ? "1" : "0";
 
   // Showing or hiding the footer changes how tall the panel needs to
   // be, so the box has to follow in the same step.
@@ -770,6 +830,11 @@ function summaryRegions() {
 }
 
 function renderSummary() {
+  // The dot on the gear says the same thing this line does, so the two
+  // are set together. Both describe `saved`, which changes only here and
+  // at boot - not on every checkbox inside the panel.
+  el.gear.dataset.active = countActive(saved) ? "1" : "0";
+
   if (!countActive(saved)) {
     el.summary.textContent = "";
     return;

@@ -2,6 +2,10 @@ CLAUDE.md
 .claude/
 docs/
 
+# The saved brief: RTsoft's ICP, written by the interface. Same reason as
+# docs/ - the engine is public, their profile is not.
+web/icp.json
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

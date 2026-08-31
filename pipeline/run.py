@@ -219,6 +219,19 @@ def bootstrap(stages=STAGES, dry_run=False):
 # ---------------------------------------------------------------------------
 
 
+def default_icp():
+    """RTsoft's ICP as the pipeline ships it, before anyone edits it.
+
+    Separate from load_icp() because the interface needs the same thing:
+    an empty filter screen would ask the salesperson to retype a profile
+    the prototype already knows. One list of NACE codes for both ends.
+    """
+    from pipeline.sources.res_bulk import ICP_FORMA, ICP_KATPO, ICP_NACE
+    return {
+        "nace": sorted(ICP_NACE), "katpo": sorted(ICP_KATPO), "forma": sorted(ICP_FORMA),
+    }
+
+
 def load_icp():
     """The salesperson's brief, or the built-in ICP when none was saved.
 
@@ -233,11 +246,9 @@ def load_icp():
         icp["_source"] = str(ICP_FILE)
         return icp
 
-    from pipeline.sources.res_bulk import ICP_FORMA, ICP_KATPO, ICP_NACE
-    return {
-        "_source": "built-in default (web/icp.json not saved yet)",
-        "nace": sorted(ICP_NACE), "katpo": sorted(ICP_KATPO), "forma": sorted(ICP_FORMA),
-    }
+    icp = default_icp()
+    icp["_source"] = "built-in default (web/icp.json not saved yet)"
+    return icp
 
 
 def stage_refresh(archive, run_id, days):
