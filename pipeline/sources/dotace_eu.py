@@ -59,13 +59,29 @@ import zipfile
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import urljoin
 
-# The download link carries a GUID that changes when MMR republishes.
-# Kept here rather than scraped so a run is reproducible; when it 404s,
-# the landing page below has the current one.
+# The download link carries both a GUID and the month it belongs to, and
+# MMR mints a new one every release. A pinned URL therefore stops being
+# "the current file" the moment the next one appears - it either 404s or,
+# worse, keeps serving August forever while --refresh reports success.
+# That is the failure this project keeps meeting: data that is stale and
+# looks fine. So the current link is read off the landing page, which
+# lists every monthly release (47 of them at the time of writing), and
+# the pinned URL below is only the fallback for when that page changes
+# shape.
 SOURCE_PAGE = "https://www.dotaceeu.cz/cs/statistiky-a-analyzy/seznam-operaci-(prijemcu)"
-URL = ("https://www.dotaceeu.cz/getmedia/e06f478c-d716-4dac-bfd7-48a8b6cc0d6b/"
-       "2026_08_Seznam-operaci_List-of-Operations_21.xlsx.aspx")
+FALLBACK_URL = ("https://www.dotaceeu.cz/getmedia/e06f478c-d716-4dac-bfd7-48a8b6cc0d6b/"
+                "2026_08_Seznam-operaci_List-of-Operations_21.xlsx.aspx")
+
+# Releases are named 2026_08_Seznam-operaci_List-of-Operations_21.xlsx.
+# The date prefix is what orders them; the GUID carries no order at all.
+# "Seznam-operaci-FN" is a different, smaller list (financial
+# instruments) that must not be picked up by mistake.
+RELEASE_LINK = re.compile(
+    r'href="(/getmedia/[^"]*?/(\d{4})_(\d{2})_Seznam-operaci_List-of-Operations[^"]*)"',
+    re.IGNORECASE,
+)
 
 XLSX = Path("data/raw/dotace_eu.xlsx")
 CACHE = Path("data/raw/dotace_eu.jsonl")
@@ -218,7 +234,41 @@ def publication_lag(subsidies, today=None):
     return (today - date.fromisoformat(max(signed))).days
 
 
-def download(url=URL, path=XLSX):
+def current_url(page=SOURCE_PAGE):
+    """The newest monthly release link, read off the landing page.
+
+    Returns (url, "YYYY_MM"), or (FALLBACK_URL, None) if the page cannot
+    be read or its shape changed. Falling back rather than raising is
+    deliberate: an unreachable landing page should not stop a run that
+    could still work off last month's file - but the caller is told
+    which it got, so "we are reading a stale release" stays visible
+    instead of being an assumption.
+    """
+    try:
+        request = urllib.request.Request(page, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            html = response.read().decode("utf-8", "replace")
+    except Exception as error:
+        print(f"dotace_eu: landing page unreadable ({type(error).__name__}), "
+              f"falling back to the pinned link", file=sys.stderr)
+        return FALLBACK_URL, None
+
+    releases = RELEASE_LINK.findall(html)
+    if not releases:
+        print("dotace_eu: no release links on the landing page, "
+              "falling back to the pinned link", file=sys.stderr)
+        return FALLBACK_URL, None
+
+    href, year, month = max(releases, key=lambda r: (r[1], r[2]))
+    return urljoin(page, href), f"{year}_{month}"
+
+
+def download(url=None, path=XLSX):
+    """Fetch the newest release, or a specific one when `url` is given."""
+    if url is None:
+        url, release = current_url()
+        print(f"dotace_eu: newest release is {release or 'unknown (pinned link)'}",
+              file=sys.stderr)
     print(f"downloading {url} ...", file=sys.stderr)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
