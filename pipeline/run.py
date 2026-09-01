@@ -225,11 +225,45 @@ def default_icp():
     Separate from load_icp() because the interface needs the same thing:
     an empty filter screen would ask the salesperson to retype a profile
     the prototype already knows. One list of NACE codes for both ends.
+
+    `location` is the brief's own geography, CLAUDE.md §2: "preferovaně
+    Plzensky kraj -> Karlovarsky, Jihocesky, Stredocesky, Praha (~150
+    km)" - RTsoft sits in Plzen and drives to the shop floor. It is a
+    priority ("preferovaně"), not a filter ("pouze"), so it is carried
+    here as a radius around Plzen for the screen to show pre-filled,
+    not as a hard cut anything in the pipeline enforces.
     """
     from pipeline.sources.res_bulk import ICP_FORMA, ICP_KATPO, ICP_NACE
     return {
         "nace": sorted(ICP_NACE), "katpo": sorted(ICP_KATPO), "forma": sorted(ICP_FORMA),
+        "regions": None,
+        "location": {
+            "from": "Plzeň", "km": 150,
+            "origin": {"name": "Plzeň", "lat": 49.7529, "lon": 13.3566},
+        },
     }
+
+
+def with_defaults(icp, fallback=None):
+    """Any field left empty always falls back to RTsoft's own ICP.
+
+    One rule for every criterion - nace, katpo, forma, regions, the
+    radius - not just geography. An empty field is never read as "the
+    salesperson chose everything"; it means nobody has decided yet, and
+    RTsoft's own profile answers until something is picked instead. Both
+    ends read a saved brief through this - api/main.py for the screen,
+    load_icp() below for the actual run - so what the interface shows
+    "selected" and what the pipeline filters on never disagree about
+    what an empty field means.
+    """
+    fallback = fallback or default_icp()
+    merged = dict(icp)
+    for key in ("nace", "katpo", "forma", "regions"):
+        if not merged.get(key):
+            merged[key] = fallback.get(key)
+    if not (merged.get("location") or {}).get("km"):
+        merged["location"] = fallback.get("location")
+    return merged
 
 
 def load_icp():
@@ -244,6 +278,7 @@ def load_icp():
     if ICP_FILE.exists():
         try:
             icp = json.loads(ICP_FILE.read_text(encoding="utf-8"))
+            icp = with_defaults(icp)
             icp["_source"] = str(ICP_FILE)
             return icp
         except (json.JSONDecodeError, UnicodeDecodeError) as error:

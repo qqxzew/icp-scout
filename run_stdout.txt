@@ -1,0 +1,93 @@
+OK Záchlumí, a.s.   (IČO 27975924)
+  ověřeno: běžný text   ~ úsudek modelu                                                   prázdné = nezjištěno
+
+  IČO                   27975924                                                          https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/27975924
+  Sídlo                 Záchlumí · Tachov · Plzeňský kraj                                 https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/27975924
+  Velikost              50-99 zaměstnanců                                                 https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/27975924
+  NACE                  25620                                                             https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/27975924
+  Obrat (závěrka)       závěrka je sken bez textové vrstvy                                https://or.justice.cz/ias/content/download?id=efcc7671133049089b1c44f7d889d73b
+  Web                   okz.cz [proven]                                                   https://okz.cz
+  Certifikát            ISO 9001 · vydal Bureau Veritas                                   https://www.okz.cz/cs/firemni-profil/certifikace/
+  Certifikát            ISO 3834 · vydal Bureau Veritas                                   https://www.okz.cz/cs/firemni-profil/certifikace/
+  Jednatel              Ing. JAN MAROUŠEK · Předseda představenstva, od 2026-03-09        https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/27975924
+    ↳ kanál z webu      
+  Proč teď              subsidy_signed: podepsaná dotace EU (3.1 mil. Kč): Digitalizace…  https://www.dotaceeu.cz/getmedia/e06f478c-d716-4dac-bfd7-48a8b6cc0d6b/2026_08_Seznam-operaci_List-of-Operations_21.xlsx.aspx?ext=.xlsx
+  pain                  firma má výrobní haly o celkové kryté ploše 8.906 m2 a sklady o…  https://www.okz.cz/cs/vyrobni-zarizeni/
+                        „Výroba probíhá v samostatných výrobních halách o celkové kryté p"
+  pain                  některé pozice mají na starosti "přípravu", provádění samokontr…  https://www.okz.cz/cs/kariera/aktualni-nabidka-volnych-mist/
+                        „Provádění samokontrolní činnosti u prováděných prací a produktů"
+  pain                  vedení zácviku nových pracovníků a speciální školení při nově z…  https://www.okz.cz/cs/kariera/aktualni-nabidka-volnych-mist/
+                        „Zácvik nových pracovníků nebo při nově zahajované výrobě"
+  production_mode       Vyrábíme na zakázku: kusovou, prototypovou a sériovou výrobu dl…  https://www.okz.cz/en/company-profile/
+                        „We realize metal production on demand. One piece or serial produ"
+  production_mode       Schopnost samostatně pracovat dle výkresové dokumentace – značí…  https://www.okz.cz/cs/kariera/aktualni-nabidka-volnych-mist/
+                        „Schopnost samostatně pracovat dle výkresové dokumentace"
+  pain                  Velký výrobní areál s celkovou plochou 58.104 m2 a výrobními ha…  https://www.okz.cz/cs/vyrobni-zarizeni/
+                        „Společnost sídlí v samostatném areálu mimo obytnou zástavbu. Are"
+  pain                  Nabídka pracovních míst uvádí pozice svářečů a zámečníků s poža…  https://www.okz.cz/cs/kariera/aktualni-nabidka-volnych-mist/
+                        „Jednosměnný provoz"
+  production_mode       Společnost OK Záchlumí, a.s. vyrábí středně těžké ocelové konst…  https://www.okz.cz/cs/firemni-profil/
+                        „Současné výrobní, technické i personální vybavení společnosti um"
+  production_mode       Svářečské práce a výroba konstrukcí na základě technické a výkr…  https://www.okz.cz/cs/kariera/aktualni-nabidka-volnych-mist/
+                        „Svářečské práce při výrobě konstrukcí a navazujících dílčích pod"
+  production_mode       ~ Výroba probíhá ve velkém samostatném areálu s výrobními halam…  inzerát MPSV
+  pain                  ~ není uvedeno použití papírových výkazů, excelových tabulek an…  inzerát MPSV
+  pain                  ~ není explicitně uvedena závislost výroby na jediném člověku n…  inzerát MPSV
+  pain                  ~ Na webu není explicitní zmínka o ručním převodu dat z provozu…  https://www.okz.cz/cs/firemni-profil/
+  pain                  ~ Není zde zmínka o dlouhém zaškolení, přenosu znalostí ústně č…  https://www.okz.cz/cs/firemni-profil/
+
+  11 ověřených faktů · 5 úsudků · 3 zahozeno při ověření
+
+KVAZAR akciová společnost   (IČO 00560383)
+  ověřeno: běžný text   ~ úsudek modelu                                                   prázdné = nezjištěno
+
+  IČO                   00560383                                                          https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/00560383
+  Sídlo                 Ostrava · Ostrava-město · Moravskoslezský kraj                    https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/00560383
+  Velikost              50-99 zaměstnanců                                                 https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/00560383
+  NACE                  41000                                                             https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/00560383
+  Obrat (závěrka)       závěrka je sken bez textové vrstvy                                https://or.justice.cz/ias/content/download?id=119a154c21f2428da8f9abbcebf251ef
+  Web                   kvazar.cz [proven]                                                https://kvazar.cz
+  Certifikát            
+  Jednatel              Ing. RADEK MALOHLAVA · předseda představenstva, od 2025-03-11     https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/00560383
+    ↳ kanál z webu      radek.malohlava@kvazar.cz                                         kvazar.cz
+  Jednatel              JAROSLAV JEDINÁK · místopředseda představenstva, od 2026-08-20    https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/00560383
+    ↳ kanál z webu      
+  Proč teď              director_departed: Ing. ČENĚK FAJKUS (člen představenstva) — op…  https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/00560383
+  pain                  Pozice stavbyvedoucího zahrnuje vedení stavebního deníku a odpo…  https://www.kvazar.cz/kariera/stavbyvedouci/
+                        „Vedení stavebního deníků + odpovídající legislativa"
+  production_mode       Firma realizuje výstavbu a rekonstrukce staveb průmyslových, ob…  https://www.kvazar.cz/
+                        „Realizujeme stavby pro veřejný i soukromý sektor – vždy s ohlede"
+  production_mode       Firma realizuje projekty vždy na zakázku, přizpůsobuje je speci…  https://www.kvazar.cz/kariera/stavbyvedouci/
+                        „Naše projekty realizujeme pro veřejný i soukromý sektor, vždy s "
+
+  6 ověřených faktů · 0 úsudků · 9 zahozeno při ověření
+
+ŠROUBY Krupka s.r.o.   (IČO 46710043)
+  ověřeno: běžný text   ~ úsudek modelu                                                   prázdné = nezjištěno
+
+  IČO                   46710043                                                          https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/46710043
+  Sídlo                 Krupka · Teplice · Ústecký kraj                                   https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/46710043
+  Velikost              50-99 zaměstnanců                                                 https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/46710043
+  NACE                  25940                                                             https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-res/46710043
+  Obrat (závěrka)       podána jen rozvaha, výkaz zisku a ztráty chybí                    https://or.justice.cz/ias/content/download?id=61711ced56054a238997ea1e20ea2495
+  Web                   sroubykrupka.cz [proven]                                          https://sroubykrupka.cz
+  Certifikát            
+  Jednatel              Ing. ZDENĚK KUBÁČ · Jednatel, od 2013-11-12                       https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/46710043
+    ↳ kanál z webu      z.kubac@sroubykrupka.cz                                           sroubykrupka.cz
+  Jednatel              Ing. PAVEL SOUKUP · Jednatel, od 2026-08-25                       https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/46710043
+    ↳ kanál z webu      p.soukup@sroubykrupka.cz                                          sroubykrupka.cz
+  Proč teď              director_departed: FRANTIŠEK HAVRÁNEK (Jednatel) — opustil stat…  https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/46710043
+  Proč teď              director_joined: Ing. PAVEL SOUKUP (Jednatel) — nastoupil do st…  https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty-vr/46710043
+  pain                  sortiment cca 6000 výkresových dílů                               https://sroubykrupka.cz/cs/profil
+                        „sortiment cca 6000 výkresových dílů, z nichž je jako ukázka uved"
+  production_mode       Výroba dle výkresu a sortiment cca 6000 výkresových dílů, hlavn…  https://sroubykrupka.cz/cs/profil
+                        „hlavní náplní jsou přesné výkresové součásti. V současné době za"
+  production_mode       Výroba dle výkresové dokumentace zákazníka                        https://sroubykrupka.cz/cs/vyroba
+                        „Dle výkresu"
+  pain                  obsluha zařízení na odmašťování výrobků spojovacích součástí př…  inzerát MPSV
+                        „obsluha zařízení na odmašťování výrobků spojovacích součástí při"
+  pain                  Požadujeme fyzickou zdatnost, spolehlivost, pracovitost           inzerát MPSV
+                        „Trvalá ruční práce s břemeny o  váze nad i pod 50 kg. Práce je f"
+
+  5 ověřených faktů · 0 úsudků · 1 zahozeno při ověření
+

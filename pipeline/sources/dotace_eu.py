@@ -281,7 +281,12 @@ def download(url=None, path=XLSX):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     print(f"  {len(data) // 1024 // 1024} MB -> {path}", file=sys.stderr)
-    return path
+    # The URL is returned, not just the path: the archive records which
+    # release a snapshot came from, and with a link that changes every
+    # month that is the only way to know months later which file was
+    # read. Returning only the path was enough while the URL was a
+    # constant; it stopped being one.
+    return path, url
 
 
 def excel_date(serial):
@@ -387,7 +392,7 @@ def parse(path=XLSX, only_icos=None):
 
 def refresh(only_icos=None, archive=None):
     """Download, parse and keep the rows for the candidates we care about."""
-    download()
+    _, source_url = download()
     rows = parse(only_icos=only_icos)
 
     CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -402,7 +407,7 @@ def refresh(only_icos=None, archive=None):
             grouped[row["ico"]].append(row)
         for ico, projects in grouped.items():
             archive.store(ico, "dotace_eu", json.dumps(projects, ensure_ascii=False),
-                          url=URL, run_id=run_id)
+                          url=source_url, run_id=run_id)
         archive.finish_run(run_id)
         print(f"  archived {len(grouped)} company subsidy sets", file=sys.stderr)
 

@@ -296,16 +296,30 @@ class Archive:
             raise ValueError(f"state must be fact or inference, got {state!r}")
         ico = str(ico).zfill(8)
         with self._lock:
+            # snapshot_id is deliberately NOT part of what makes a claim
+            # the same claim. The same fact proven by a fresher copy of
+            # the same page is one fact, not two - and re-fetching pages
+            # is what this pipeline does every week, so including the
+            # snapshot meant a company accumulated a duplicate of every
+            # registry event on every run. Seen on ŠROUBY Krupka: the
+            # same departure recorded twice, identical value and quote,
+            # differing only in which snapshot backed it.
             existing = self.db.execute(
-                "SELECT id FROM claim WHERE ico = ? AND kind = ? AND value IS ?"
-                " AND state = ? AND quote IS ? AND snapshot_id = ?",
-                (ico, kind, value, state, quote, snapshot_id),
+                "SELECT id, snapshot_id FROM claim WHERE ico = ? AND kind = ?"
+                " AND value IS ? AND state = ? AND quote IS ?",
+                (ico, kind, value, state, quote),
             ).fetchone()
             if existing is not None:
-                if run_id is not None:
-                    self.db.execute("UPDATE claim SET run_id = ? WHERE id = ?",
-                                    (run_id, existing["id"]))
-                    self.db.commit()
+                # Point at the newer snapshot. The caller verified this
+                # quote against it a moment ago, so it is at least as
+                # good a proof and is the copy that still matches what
+                # the page says today.
+                self.db.execute(
+                    "UPDATE claim SET snapshot_id = ?, run_id = COALESCE(?, run_id)"
+                    " WHERE id = ?",
+                    (snapshot_id, run_id, existing["id"]),
+                )
+                self.db.commit()
                 return existing["id"]
             cursor = self.db.execute(
                 "INSERT INTO claim (ico, kind, value, state, quote, snapshot_id, run_id, created_at)"

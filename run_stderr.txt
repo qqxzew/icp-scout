@@ -1,0 +1,11 @@
+run 76 · ICP from web\icp.json
+
+[gate]
+  12 excluded by negative filters (insolvency, liquidation)
+  3 of 3299 companies have a dated event
+  claims recorded: {'fact': 4, 'inference': 0, 'discard': 0}
+
+[select]
+
+[cards]
+only 3 companies had a real reason this week, not 5. Handing over 3 rather than padding the list.

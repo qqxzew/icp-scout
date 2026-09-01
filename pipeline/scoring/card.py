@@ -33,11 +33,12 @@ Run:
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 from pipeline.evidence.archive import Archive
 from pipeline.scoring.select import CONTACTS, WEBSITES, load_jsonl
-from pipeline.signals.now import load_tenders
+from pipeline.signals.now import load_tenders, parse_deadline as parse_tender_deadline
 
 TURNOVER_CACHE = Path("data/raw/turnover.jsonl")
 
@@ -244,16 +245,17 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
     # archiving was missing; that shortcut is gone, and with it the one
     # line on the card that cited a live page instead of a stored copy.
     if not any(e["kind"] == "tender_open" for e in now_events):
-        for tender in relevant_tenders(ico, tenders):
-            if tender.get("status") not in ("Neukončen", "Plánován"):
-                continue
-            # Only reached when the gate has run but nothing recorded the
-            # claims yet - a bare `card.py <ico>` outside a full run.
+        from pipeline.signals.now import tender_events
+        # Same rule as the gate: still accepting bids, or it is context
+        # rather than a reason. Reached only when card.py runs on its own
+        # outside a full run, where nothing has recorded the claims yet.
+        for event in tender_events(ico, tenders):
             now_events.append({
                 "kind": "tender_open",
-                "value": f"otevřená zakázka: {tender.get('name', '')[:70]}",
-                "url": tender.get("url"),
-                "seen_at": tender.get("published") or tender.get("retrieved_at"),
+                "value": f"otevřená zakázka, do uzávěrky {event['days_left']} dní: "
+                         f"{(event.get('subject') or '')[:60]}",
+                "url": event.get("url"),
+                "seen_at": event.get("date"),
             })
 
     site = websites.get(ico, {})
@@ -442,8 +444,16 @@ def render(card):
 
     for tender in card.get("tenders") or []:
         published = tender.get("published") or ""
-        state = ("otevřená" if tender.get("status") in ("Neukončen", "Plánován")
-                 else tender.get("status"))
+        # The state a salesperson needs is "can I still bid", which is
+        # the deadline - not NEN's record status, which stays
+        # "Neukončen" for years after bidding closed and made four of
+        # five companies in one run look like live opportunities.
+        deadline = parse_tender_deadline(tender.get("deadline"))
+        if tender.get("status") in ("Neukončen", "Plánován"):
+            state = ("otevřená" if deadline and deadline >= date.today()
+                     else "po uzávěrce")
+        else:
+            state = tender.get("status")
         out.append(row("Zakázka",
                        f"[{state}] {tender.get('name', '')[:52]}"
                        + (f" · {published[:10]}" if published else ""),

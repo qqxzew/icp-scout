@@ -280,23 +280,28 @@ def load_tenders(path=TENDERS):
 
 
 def tender_events(ico, tenders, today=None):
-    """Open procurements whose subject is something RTsoft sells.
+    """Procurements still accepting bids, whose subject RTsoft could supply.
 
-    NO WINDOW, AND THAT IS DELIBERATE. Every other signal here answers
-    "did this happen recently"; an open tender answers "is this
-    happening now", which is a stronger question and needs no cutoff -
-    a procurement accepting bids is current by definition, however long
-    ago it was posted. So age_days is 0: it is not a recent event, it is
-    a present state.
+    THE DEADLINE DECIDES, NOT THE STATUS. The first version of this took
+    NEN's `Neukončen` to mean "open" and it was wrong in every single
+    case: judging the five companies a full run delivered, all six of
+    their "open" tenders had closed for bids 34, 127, 183, 312, 461 and
+    734 days earlier. `Neukončen` is an administrative state of the
+    record - a procurement sits there for years after bidding ends -
+    and reading it as "buying now" produced four false leads out of
+    five. The one real lead in that run had no tender at all: a subsidy
+    granted 113 days ago with no procurement started, which is the
+    strongest case in the whole matrix.
 
-    The listing carries no publication date, only the deadline for
-    bids - which turns out to be the more useful of the two anyway,
-    because it says how long there is left to act rather than how long
-    ago something was announced.
+    So an event is produced only while bids can still be submitted. A
+    tender whose deadline has passed is a fact about the company's past
+    and belongs on the card as context - "they were buying an MES last
+    autumn" is worth knowing before dialling - but it is not a reason to
+    call this week, and scoring/card.py shows it separately.
 
-    Awarded tenders are not returned. They are the opposite of a reason
-    to call, and scoring/card.py surfaces them separately so the
-    salesperson sees "they already bought" rather than nothing at all.
+    Still no window on top of that, and that part was right: a tender
+    open for bids is current whenever it was posted, so age_days stays 0
+    and `days_left` carries the number that matters.
     """
     today = today or date.today()
     events = []
@@ -304,6 +309,13 @@ def tender_events(ico, tenders, today=None):
         if not row.get("relevant") or row.get("status") not in TENDER_OPEN:
             continue
         deadline = parse_deadline(row.get("deadline"))
+        # No deadline at all is not treated as open. It is far more often
+        # a record NEN never filled in than a procurement with no closing
+        # date, and guessing in favour of a lead is how four of the five
+        # companies in the last run got a reason to call that was over a
+        # year stale.
+        if deadline is None or deadline < today:
+            continue
         events.append({
             "kind": "tender_open",
             "date": deadline.isoformat() if deadline else None,
@@ -455,6 +467,12 @@ def snapshot_for(archive, ico, kind, url=None):
 QUOTE_BACK = 320
 QUOTE_FORWARD = 90
 
+# How far back the search for the event's own date may reach. One
+# person's record - dates, address, name - runs to roughly a thousand
+# characters, so this covers it without wandering into the record
+# before, whose dates belong to somebody else.
+MAX_QUOTE_BACK = 1200
+
 
 def evidence_quote(event, text):
     """A verbatim substring of `text` that backs `event`, or None.
@@ -475,6 +493,13 @@ def evidence_quote(event, text):
     """
     if not text:
         return None
+
+    if event["kind"].startswith(("director", "owner")):
+        quote = registry_quote(event, text)
+        if quote:
+            return quote
+        # Fall through to the name anchor below when the date is not in
+        # the document - better a quote proving the person than none.
 
     anchors = []
     if event["kind"] == "tender_open":
@@ -503,8 +528,51 @@ def evidence_quote(event, text):
             continue
         start = max(0, position - QUOTE_BACK)
         end = min(len(text), position + len(anchor) + QUOTE_FORWARD)
+
         return text[start:end]
     return None
+
+
+def registry_quote(event, text):
+    """A quote spanning the event's own date through to the person's name.
+
+    Two bugs made this its own function rather than a wider window.
+
+    First, the quote has to carry the event's OWN date or it proves only
+    that the person exists in the register. HAVRÁNEK's "datumVymazu":
+    "2026-08-25" sits 793 characters before his surname - the address
+    block in between is long - so a 320-character window stopped short
+    of it and instead caught the datumZapisu of the NEXT record, a date
+    belonging to somebody else entirely.
+
+    Second, anchoring on the name finds the WRONG occurrence when a
+    person appears more than once. ČENĚK FAJKUS left KVAZAR's board
+    twice, in 2025 and 2026; a search for his surname lands on the 2025
+    record, and the quote then dates a 2026 departure to the year
+    before.
+
+    So the search runs date-first: find the event's date, then the name
+    after it. That pairs the two the way the record itself does, and the
+    quote reads as the register reads - date, role, person.
+    """
+    event_date = event.get("date")
+    parts = (event.get("name") or "").split()
+    if not event_date or not parts:
+        return None
+
+    surname = parts[-1]
+    start = 0
+    while True:
+        found = text.find(f'"{event_date}"', start)
+        if found < 0:
+            return None
+        # The name has to sit inside this record, not the next one.
+        name_at = text.find(surname, found, found + MAX_QUOTE_BACK)
+        if name_at >= 0:
+            field = text.rfind('"datum', max(0, found - 40), found)
+            begin = field if field >= 0 else found
+            return text[begin:min(len(text), name_at + len(surname) + QUOTE_FORWARD)]
+        start = found + 1
 
 
 def record(archive, company, history, window_days=30, run_id=None, today=None,

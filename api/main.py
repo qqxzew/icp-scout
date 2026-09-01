@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pipeline.evidence.archive import Archive
-from pipeline.run import default_icp
+from pipeline.run import default_icp, with_defaults
 from pipeline.sources.res_bulk import ICP_FORMA
 
 
@@ -78,12 +78,16 @@ def read_filters():
 	The interface opens on this instead of on an empty form. A blank
 	screen would be a lie about the prototype's state - the pipeline has
 	an ICP either way, and hiding it would only invite retyping it by
-	hand. Once something is saved the file wins, including a saved
-	"everything": that is a decision, not a missing answer.
+	hand. An empty field in a saved brief is not "everything" either -
+	see with_defaults() - so a screen the salesperson never opened keeps
+	showing RTsoft's own answer for it, not a silent "vše".
 	"""
-	if ICP_PATH.is_file():
-		return json.loads(ICP_PATH.read_text(encoding="utf-8"))
-	return default_icp()
+	fallback = default_icp()
+	if not ICP_PATH.is_file():
+		return fallback
+
+	saved = json.loads(ICP_PATH.read_text(encoding="utf-8"))
+	return with_defaults(saved, fallback)
 
 
 @app.post("/api/icp")
