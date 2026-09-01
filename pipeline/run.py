@@ -242,9 +242,20 @@ def load_icp():
     recorded explicitly as the fallback, not passed off as a choice.
     """
     if ICP_FILE.exists():
-        icp = json.loads(ICP_FILE.read_text(encoding="utf-8"))
-        icp["_source"] = str(ICP_FILE)
-        return icp
+        try:
+            icp = json.loads(ICP_FILE.read_text(encoding="utf-8"))
+            icp["_source"] = str(ICP_FILE)
+            return icp
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            # A saved brief that will not parse must not take the run
+            # down with it. Found live: a stray keystroke after the
+            # closing brace, which crashed the whole pipeline at stage
+            # one before a single company was looked at. The built-in
+            # ICP is a worse answer than the saved one but an enormously
+            # better answer than a traceback - and saying which was used
+            # is what keeps it from passing unnoticed.
+            print(f"run: {ICP_FILE} is not valid JSON ({error}); "
+                  f"falling back to the built-in ICP", file=sys.stderr)
 
     icp = default_icp()
     icp["_source"] = "built-in default (web/icp.json not saved yet)"
@@ -366,17 +377,21 @@ def stage_agents(icos):
 def stage_cards(archive, run_id, ranked, top, fetch_turnover=True):
     """Render the week's dossiers and record what was handed over."""
     from pipeline.scoring.card import build, load_turnover_cache, render
+    from pipeline.signals.now import load_tenders
     from pipeline.scoring.select import CONTACTS as C, WEBSITES as W, load_jsonl
     from pipeline.signals.now import load_companies
 
     companies = {c["ico"]: c for c in load_companies(CANDIDATES)}
     websites, contacts = load_jsonl(W), load_jsonl(C)
     turnover_cache = load_turnover_cache()
+    # Loaded once for the whole batch rather than per card - build()
+    # would otherwise re-read nen.jsonl five times over.
+    tenders = load_tenders()
 
     cards = []
     for row in ranked[:top]:
         card = build(row["ico"], archive, companies, websites, contacts,
-                     turnover_cache, fetch_turnover)
+                     turnover_cache, fetch_turnover, tenders)
         card["pain_score"] = row["pain_score"]
         cards.append(card)
         print(render(card))

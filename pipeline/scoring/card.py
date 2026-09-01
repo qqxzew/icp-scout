@@ -37,6 +37,7 @@ from pathlib import Path
 
 from pipeline.evidence.archive import Archive
 from pipeline.scoring.select import CONTACTS, WEBSITES, load_jsonl
+from pipeline.signals.now import load_tenders
 
 TURNOVER_CACHE = Path("data/raw/turnover.jsonl")
 
@@ -152,6 +153,48 @@ def turnover_from_site(archive, ico):
     return out
 
 
+def relevant_tenders(ico, tenders):
+    """This company's procurements whose subject we could supply.
+
+    Open ones are the reason to call; awarded ones are the opposite, and
+    both belong on the card. "They bought an ERP in March" is not a lead
+    but it is exactly the context a salesperson needs before dialling -
+    hiding it would leave them to discover it mid-call.
+    """
+    rows = (tenders or {}).get(str(ico).zfill(8), [])
+    return [r for r in rows if r.get("relevant")]
+
+
+def tender_contacts(ico, tenders):
+    """Contact people named on this company's relevant tenders.
+
+    Each carries the tier nen.py assigned it - register, company or
+    external - because that is the difference between the owner's own
+    address and a grant consultancy administering the paperwork, and on
+    the measured sample two of every three were the consultancy.
+    """
+    out, seen = [], set()
+    for row in relevant_tenders(ico, tenders):
+        contact = row.get("contact") or {}
+        key = (contact.get("name"), contact.get("email"))
+        if not contact.get("name") or key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "name": contact.get("name"),
+            "email": contact.get("email"),
+            "phone": contact.get("phone"),
+            "tier": contact.get("tier"),
+            "about": row.get("name"),
+            "url": row.get("url"),
+        })
+    # Register-matched people first: a name confirmed in a state register
+    # outranks any amount of matching on an email domain.
+    order = {"register": 0, "company": 1, "external": 2}
+    out.sort(key=lambda c: order.get(c["tier"], 3))
+    return out
+
+
 def certificates_for(ico, cache_path=Path("data/raw/certificates.jsonl")):
     """Certificates already collected by sources/certificates.py, if any."""
     if not Path(cache_path).exists():
@@ -166,11 +209,14 @@ def certificates_for(ico, cache_path=Path("data/raw/certificates.jsonl")):
 
 
 def build(ico, archive, companies=None, websites=None, contacts=None,
-          turnover_cache=None, fetch_turnover=True):
+          turnover_cache=None, fetch_turnover=True, tenders=None):
     """Everything known about one company, grouped the way it is read."""
     ico = str(ico).zfill(8)
     websites = websites if websites is not None else load_jsonl(WEBSITES)
     contacts = contacts if contacts is not None else load_jsonl(CONTACTS)
+    # Loaded rather than left to default to None - the fourth time an
+    # optional argument would have quietly switched a source off.
+    tenders = tenders if tenders is not None else load_tenders()
     company = (companies or {}).get(ico, {})
 
     claims = archive.claims(ico)
@@ -190,6 +236,25 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
          "url": row["url"], "seen_at": row["fetched_at"]}
         for row in claims if row["kind"].startswith("now:")
     ]
+
+    # Open tenders are read straight from nen.jsonl rather than from the
+    # claim table, because nen.py does not archive the tender page yet -
+    # so signals/now.py can gate on them but now.py --record has no
+    # snapshot to attach a claim to, and the card came up empty for a
+    # company with two live procurements. Sourced by URL here, which is
+    # honest but weaker than the rest of the card: every other line
+    # points at an archived copy that cannot change under us, this one
+    # points at a page NEN can edit. Archiving the detail page is the
+    # remaining step to make it consistent with everything else.
+    for tender in relevant_tenders(ico, tenders):
+        if tender.get("status") not in ("Neukončen", "Plánován"):
+            continue
+        now_events.append({
+            "kind": "tender_open",
+            "value": f"otevřená zakázka: {tender.get('name', '')[:70]}",
+            "url": tender.get("url"),
+            "seen_at": tender.get("published") or tender.get("retrieved_at"),
+        })
 
     site = websites.get(ico, {})
 
@@ -211,7 +276,10 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
             "email": found.get("email"),
             "phone": found.get("phone"),
             "quote": found.get("quote"),
+            "source": "web" if (found.get("email") or found.get("phone")) else None,
         })
+
+    tender_people = tender_contacts(ico, tenders)
 
     return {
         "ico": ico,
@@ -231,6 +299,14 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         "certificates": certificates_for(ico),
         "website": {"domain": site.get("domain"), "status": site.get("status")},
         "contacts": people,
+        # Kept apart from `contacts` rather than merged into it. A tender
+        # contact is the person handling THAT purchase, which is both
+        # more useful for this conversation and less certain as a
+        # company contact - measured, 20 of 29 were grant consultancies.
+        # Merging would erase which is which; the card shows both and
+        # says where each came from.
+        "tender_contacts": tender_people,
+        "tenders": relevant_tenders(ico, tenders),
         "why_now": now_events,
         "evidence": evidence,
         "discarded": len(archive.discards(ico=ico)),
@@ -338,10 +414,44 @@ def render(card):
             # channel is something we had to find on a page and often
             # did not. Printing them on one line would let a missing
             # channel look like a missing person.
-            out.append(row("  ↳ kanál", person.get("email") or person.get("phone") or "",
+            out.append(row("  ↳ kanál z webu",
+                           person.get("email") or person.get("phone") or "",
                            card["website"].get("domain") or ""))
     else:
         out.append(row("Jednatel", "", vr))
+
+    # The tender's own contact, kept separate from the website one. It is
+    # the person running that purchase - better for this conversation,
+    # and worse as a company contact, because two of every three measured
+    # were a grant consultancy rather than the company. The tier says
+    # which, so the salesperson chooses instead of being told.
+    # Labels stay short enough for the column, and the tier is said in
+    # the value instead - "administrátor zakázky" is the warning that
+    # matters and it belongs where the name is, not in the margin.
+    TIER_NOTE = {
+        "register": "jednatel z rejstříku",
+        "company":  "zaměstnanec firmy",
+        "external": "administrátor zakázky, ne firma",
+    }
+    for contact in card.get("tender_contacts") or []:
+        channel = " · ".join(x for x in (contact.get("email"), contact.get("phone")) if x)
+        note = TIER_NOTE.get(contact["tier"], contact["tier"])
+        out.append(row("Kontakt ze zakázky",
+                       f"{contact['name']} ({note}) — {channel}".strip(" —"),
+                       contact.get("url") or ""))
+
+    for tender in card.get("tenders") or []:
+        published = tender.get("published") or ""
+        state = ("otevřená" if tender.get("status") in ("Neukončen", "Plánován")
+                 else tender.get("status"))
+        out.append(row("Zakázka",
+                       f"[{state}] {tender.get('name', '')[:52]}"
+                       + (f" · {published[:10]}" if published else ""),
+                       tender.get("url") or ""))
+        if tender.get("cpv"):
+            out.append(row("  ↳ CPV",
+                           f"{tender['cpv']} {tender.get('cpv_name', '')[:44]}",
+                           tender.get("url") or ""))
 
     if card["why_now"]:
         for event in card["why_now"]:
