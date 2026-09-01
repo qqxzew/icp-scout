@@ -39,7 +39,8 @@ from pathlib import Path
 
 from pipeline.evidence.archive import Archive
 from pipeline.signals import mode as mode_signal
-from pipeline.signals.now import SUBSIDY_WINDOW, find as now_events, load_companies, load_history
+from pipeline.signals.now import (SUBSIDY_WINDOW, find as now_events, load_companies,
+                                  load_history, load_tenders)
 from pipeline.sources.dotace_eu import load as load_subsidies
 
 ARES_CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
@@ -102,9 +103,14 @@ def now_qualified(companies, history, window_days=DEFAULT_WINDOW, subsidies=None
     """
     if subsidies is None:
         subsidies = load_subsidies()
+    # Same lesson, same shape: an optional argument left at None silently
+    # removes a whole signal group. Loaded here rather than defaulted
+    # away, exactly as subsidies now are.
+    tenders = load_tenders()
     qualified = {}
     for company in companies:
-        events = now_events(company, history, window_days, subsidies=subsidies)
+        events = now_events(company, history, window_days,
+                            subsidies=subsidies, tenders=tenders)
         if events:
             qualified[company["ico"]] = events
     return qualified

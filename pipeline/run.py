@@ -282,18 +282,20 @@ def stage_gate(window_days):
     and an LLM pass to produce a card nobody can act on.
     """
     from pipeline.filters.negative import EXCLUDE, verdict
-    from pipeline.signals.now import find, load_companies, load_history
+    from pipeline.signals.now import find, load_companies, load_history, load_tenders
     from pipeline.sources.dotace_eu import load as load_subsidies
 
     companies = list(load_companies(CANDIDATES))
     history, subsidies = load_history(), load_subsidies()
+    tenders = load_tenders()
 
     qualified, excluded = {}, 0
     for company in companies:
         if verdict(company) == EXCLUDE:
             excluded += 1
             continue
-        events = find(company, history, window_days, subsidies=subsidies)
+        events = find(company, history, window_days,
+                      subsidies=subsidies, tenders=tenders)
         if events:
             qualified[company["ico"]] = events
 

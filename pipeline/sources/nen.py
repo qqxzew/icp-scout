@@ -176,15 +176,33 @@ def load_candidates(path=CANDIDATES):
         return [json.loads(line)["ico"] for line in handle if line.strip()]
 
 
-def run_all(limit=None, output=OUTPUT):
-    """Ask NEN about every candidate. Slow by design - one request each.
+def subsidised_candidates():
+    """Only the companies that have any EU subsidy at all.
 
-    3299 companies at ~0.6 s is a little over half an hour, which is the
-    price of not crawling 278 000 procurements to find the handful that
-    are ours.
+    Asking all 3299 was the first plan and the measurement killed it: a
+    query takes ~2.6 s (the listing is 288 kB), so the full base is 2.4
+    hours, and twelve randomly picked candidates returned zero tenders
+    between them. That is not bad luck - a private manufacturer has no
+    reason to run a public procurement unless something obliges it, and
+    what obliges it is EU money. Every hit in the first sample came from
+    the subsidy set.
+
+    692 companies instead of 3299 turns a 2.4-hour sweep into half an
+    hour, aimed at where the answers actually are.
+    """
+    from pipeline.sources.dotace_eu import load as load_subsidies
+    return sorted(load_subsidies())
+
+
+def run_all(limit=None, output=OUTPUT, icos=None):
+    """Ask NEN about a set of companies - one request each, deliberately.
+
+    Defaults to the subsidised set rather than the whole base; pass
+    `icos` to override. Slow either way, and that is the price of not
+    crawling 278 000 procurements to find the handful that are ours.
     """
     session = Session()
-    icos = load_candidates()[:limit]
+    icos = (icos if icos is not None else subsidised_candidates())[:limit]
     output.parent.mkdir(parents=True, exist_ok=True)
 
     found = with_tender = 0
@@ -217,12 +235,16 @@ def run_all(limit=None, output=OUTPUT):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tenders published on NEN.")
     parser.add_argument("--ico", help="one company")
-    parser.add_argument("--all", action="store_true", help="every ICP candidate")
+    parser.add_argument("--all", action="store_true",
+                        help="every company holding an EU subsidy (~692, ~30 min)")
+    parser.add_argument("--every-candidate", action="store_true",
+                        help="all 3299 instead - ~2.4 h, and measured to add nothing")
     parser.add_argument("--limit", type=int)
     args = parser.parse_args()
 
-    if args.all:
-        raise SystemExit(0 if run_all(args.limit) is not None else 1)
+    if args.all or args.every_candidate:
+        icos = load_candidates() if args.every_candidate else None
+        raise SystemExit(0 if run_all(args.limit, icos=icos) is not None else 1)
     if not args.ico:
         parser.error("give --ico or --all")
 
