@@ -48,12 +48,15 @@ Run:
 """
 
 import argparse
+import html
 import json
 import re
 import sys
 import time
+import unicodedata
+import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date
 from http.cookiejar import CookieJar
 from pathlib import Path
 
@@ -65,6 +68,12 @@ CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
 USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
 TIMEOUT = 45
 DELAY = 0.6          # seconds between requests; nothing here is urgent
+
+# Same policy as ares.py, for the same reason: a 5xx during a long sweep
+# means the server is busy, not that the answer is empty.
+MAX_ATTEMPTS = 4
+BACKOFF = 2          # seconds, doubled on every further attempt
+RETRY_STATUSES = (429, 500, 502, 503, 504)
 
 # The listing renders one <td> per field, each labelled by data-title.
 # Parsing on that rather than on column order, because column order is a
@@ -113,13 +122,32 @@ class Session:
         self.get(BASE + "/")          # sets the session cookie
 
     def get(self, url):
-        wait = DELAY - (time.monotonic() - self._last)
-        if wait > 0:
-            time.sleep(wait)
-        with self.opener.open(url, timeout=TIMEOUT) as response:
-            body = response.read()
-        self._last = time.monotonic()
-        return body.decode("utf-8", "replace")
+        """One page, retrying the failures that mean "not now" not "no".
+
+        NEN answers 503 under a sustained sweep - seen live, one company
+        lost mid-run before this existed. Swallowing it would record
+        "this company has no tenders", which is the same mistake the DNS
+        resolver made in website.py: a temporary refusal read as a final
+        answer. The retry is what tells the two apart.
+        """
+        for attempt in range(MAX_ATTEMPTS):
+            wait = DELAY - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                with self.opener.open(url, timeout=TIMEOUT) as response:
+                    body = response.read()
+                self._last = time.monotonic()
+                return body.decode("utf-8", "replace")
+            except urllib.error.HTTPError as error:
+                self._last = time.monotonic()
+                if error.code not in RETRY_STATUSES or attempt == MAX_ATTEMPTS - 1:
+                    raise
+                delay = BACKOFF * (2 ** attempt)
+                print(f"nen: HTTP {error.code}, retry {attempt + 1}/"
+                      f"{MAX_ATTEMPTS - 1} in {delay}s", file=sys.stderr)
+                time.sleep(delay)
+        raise RuntimeError(f"nen: {url} still failing after {MAX_ATTEMPTS} attempts")
 
 
 def parse_rows(html):
@@ -155,6 +183,122 @@ def tenders_for(ico, session=None):
         row["relevant"] = bool(SUBJECT.search(row.get("name") or ""))
         row["retrieved_at"] = date.today().isoformat()
     return rows
+
+
+# The detail page lays every field out as one tile: a label in <h3> and
+# its value in the <p> that follows. Parsing on that shape rather than on
+# a list of expected labels means a field NEN adds later shows up on its
+# own instead of being silently dropped.
+TILE = re.compile(
+    r'<div[^>]*class="gov-grid-tile"[^>]*>\s*<h3[^>]*>(.*?)</h3>\s*<p[^>]*>(.*?)</p>',
+    re.S,
+)
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+PHONE = re.compile(r"\+420[\d\s]{9,}")
+TAGS = re.compile(r"<[^>]+>")
+
+DETAIL_FIELDS = {
+    "Aktuální stav ZP": "status",
+    "Datum uveřejnění ZP na profil": "published",
+    "Lhůta pro podání nabídek": "deadline",
+    "Režim VZ dle volby zadavatele": "regime",
+    "Druh zadávacího postupu": "procedure",
+    "Druh": "contract_type",
+    "Kód z číselníku CPV": "cpv",
+    "Název z číselníku CPV": "cpv_name",
+    "Hlavní místo plnění": "place",
+    "Jméno": "contact_first_name",
+    "Příjmení": "contact_last_name",
+}
+
+# Obvious filler. A procurement notice is a legal document and the phone
+# field still gets typed as 111111111 - seen live on one of the first
+# three companies checked, so it is worth refusing rather than printing
+# on a card as if someone could ring it.
+FAKE_PHONE = re.compile(r"^\+420\s*(\d)\1{8}$")
+
+
+def strip_tags(markup):
+    return html.unescape(TAGS.sub(" ", markup or "")).strip()
+
+
+def fold(text):
+    """Lowercase, diacritics removed - for comparing names across sources."""
+    decomposed = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).strip()
+
+
+def classify_contact(name, email, register_people, domain):
+    """How much a tender's contact person is worth, and why.
+
+    Three tiers, and the order is the point - a name checked against the
+    state register beats any amount of matching on an email domain:
+
+        register  the name is a director or owner in ARES. This is the
+                  person the ICP actually wants, reached on a channel
+                  they published themselves.
+        company   not in the register, but the address is on the
+                  company's own proven domain - an employee, so a real
+                  way in, just not the decision-maker.
+        external  a different domain entirely. Measured on the first
+                  three companies checked: two of three were grant
+                  consultancies (eufc.cz, grantex.cz) administering the
+                  procurement on the company's behalf. Useful to know,
+                  wrong to present as the company's own contact.
+
+    This is contacts.py's rule applied to a new source: do not look for
+    people, look for a channel to the people the register already names.
+    """
+    surnames = {fold(p).split()[-1] for p in register_people if fold(p).split()}
+    folded = fold(name)
+    if folded and folded.split()[-1] in surnames:
+        return "register"
+    if email and domain and email.split("@")[-1].lower().endswith(domain.lower()):
+        return "company"
+    return "external"
+
+
+def detail(url, session=None, register_people=(), domain=None):
+    """Everything the tender's own page states, with the contact graded.
+
+    One extra request per tender, which is why it is not done during the
+    listing sweep: the listing answers "is this company buying at all",
+    and only the few that are get read in full.
+    """
+    session = session or Session()
+    page = session.get(url)
+
+    fields = {}
+    for label, value in TILE.findall(page):
+        key = DETAIL_FIELDS.get(strip_tags(label))
+        if key and key not in fields:
+            fields[key] = strip_tags(value)
+
+    # Email, phone and the subject description sit in a tile whose inner
+    # markup merges them, so they are pulled from the page directly
+    # rather than from the tile map - but from the text, not the markup.
+    # Searching the raw HTML returned "%22jonas.runa@eufc.cz": the
+    # address also appears inside a percent-encoded mailto attribute, and
+    # the encoded quote in front of it looks like part of a local-part to
+    # a regex.
+    text = strip_tags(page)
+    email = EMAIL.search(text)
+    phone = PHONE.search(text)
+    phone_value = " ".join(phone.group(0).split()) if phone else None
+    if phone_value and FAKE_PHONE.match(phone_value):
+        phone_value = None
+
+    name = " ".join(part for part in (fields.pop("contact_first_name", None),
+                                      fields.pop("contact_last_name", None)) if part)
+    fields["url"] = url
+    fields["contact"] = {
+        "name": name or None,
+        "email": email.group(0) if email else None,
+        "phone": phone_value,
+        "tier": classify_contact(name, email.group(0) if email else None,
+                                 register_people, domain),
+    }
+    return fields
 
 
 def parse_deadline(value):
