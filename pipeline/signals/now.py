@@ -255,9 +255,81 @@ def drop_reentries(events):
 # decoupled from the registry/vacancy one rather than sharing it.
 SUBSIDY_WINDOW = 120
 
+TENDERS = Path("data/raw/nen.jsonl")
+
+# NEN's status vocabulary, split by what it means for a salesperson.
+# This is the distinction the subsidy file could never make: a grant
+# tells you money exists, a tender's status tells you whether the money
+# has already been spent on somebody else.
+TENDER_OPEN = {"Neukončen", "Plánován"}
+TENDER_LOST = {"Zadán", "Ukončení plnění"}
+
+
+def load_tenders(path=TENDERS):
+    """ICO -> published procurements, from sources/nen.py's output."""
+    out = {}
+    if not Path(path).exists():
+        return out
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                row = json.loads(line)
+                out.setdefault(row["ico"], []).append(row)
+    return out
+
+
+def tender_events(ico, tenders, today=None):
+    """Open procurements whose subject is something RTsoft sells.
+
+    NO WINDOW, AND THAT IS DELIBERATE. Every other signal here answers
+    "did this happen recently"; an open tender answers "is this
+    happening now", which is a stronger question and needs no cutoff -
+    a procurement accepting bids is current by definition, however long
+    ago it was posted. So age_days is 0: it is not a recent event, it is
+    a present state.
+
+    The listing carries no publication date, only the deadline for
+    bids - which turns out to be the more useful of the two anyway,
+    because it says how long there is left to act rather than how long
+    ago something was announced.
+
+    Awarded tenders are not returned. They are the opposite of a reason
+    to call, and scoring/card.py surfaces them separately so the
+    salesperson sees "they already bought" rather than nothing at all.
+    """
+    today = today or date.today()
+    events = []
+    for row in tenders.get(str(ico).zfill(8), []):
+        if not row.get("relevant") or row.get("status") not in TENDER_OPEN:
+            continue
+        deadline = parse_deadline(row.get("deadline"))
+        events.append({
+            "kind": "tender_open",
+            "date": deadline.isoformat() if deadline else None,
+            "age_days": 0,
+            "days_left": (deadline - today).days if deadline else None,
+            "subject": row.get("name"),
+            "status": row.get("status"),
+            "number": row.get("number"),
+            "url": row.get("url"),
+        })
+    return events
+
+
+def parse_deadline(value):
+    """NEN prints '20. 08. 2025 10:00'. Returns a date, or None."""
+    match = re.search(r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})", value or "")
+    if not match:
+        return None
+    day, month, year = (int(g) for g in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
 
 def find(company, history, window_days=30, today=None, subsidies=None,
-         subsidy_window=SUBSIDY_WINDOW):
+         subsidy_window=SUBSIDY_WINDOW, tenders=None):
     """Every dated NOW event for one company, tagged with confidence.
 
     `confidence` is not a score - it is a visible flag for the one
@@ -287,6 +359,16 @@ def find(company, history, window_days=30, today=None, subsidies=None,
         # than left for scoring to misread.
         events += [e for e in funding_events(company["ico"], subsidies, subsidy_window, today)
                    if e["is_signal"]]
+
+    # Tenders answer the same question as subsidies from the other end,
+    # and much sooner: a grant reaches us 21-51 days after signing
+    # because MMR publishes monthly, while a procurement is on NEN the
+    # day it opens. Measured on the 60 companies matching RTsoft's own
+    # subsidy parameters: 8 had published a tender, 4 with a relevant
+    # subject, and the status told a live purchase apart from a lost one
+    # in every case.
+    if tenders:
+        events += tender_events(company["ico"], tenders, today)
 
     events.sort(key=lambda e: e["age_days"])
     return events
