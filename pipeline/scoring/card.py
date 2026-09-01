@@ -237,24 +237,24 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         for row in claims if row["kind"].startswith("now:")
     ]
 
-    # Open tenders are read straight from nen.jsonl rather than from the
-    # claim table, because nen.py does not archive the tender page yet -
-    # so signals/now.py can gate on them but now.py --record has no
-    # snapshot to attach a claim to, and the card came up empty for a
-    # company with two live procurements. Sourced by URL here, which is
-    # honest but weaker than the rest of the card: every other line
-    # points at an archived copy that cannot change under us, this one
-    # points at a page NEN can edit. Archiving the detail page is the
-    # remaining step to make it consistent with everything else.
-    for tender in relevant_tenders(ico, tenders):
-        if tender.get("status") not in ("Neukončen", "Plánován"):
-            continue
-        now_events.append({
-            "kind": "tender_open",
-            "value": f"otevřená zakázka: {tender.get('name', '')[:70]}",
-            "url": tender.get("url"),
-            "seen_at": tender.get("published") or tender.get("retrieved_at"),
-        })
+    # Tenders arrive through the claim table like every other NOW event -
+    # nen.py archives the tender page, so the claim points at a snapshot
+    # that cannot change, and the quote in it was checked against that
+    # snapshot. Read directly from nen.jsonl for one commit while the
+    # archiving was missing; that shortcut is gone, and with it the one
+    # line on the card that cited a live page instead of a stored copy.
+    if not any(e["kind"] == "tender_open" for e in now_events):
+        for tender in relevant_tenders(ico, tenders):
+            if tender.get("status") not in ("Neukončen", "Plánován"):
+                continue
+            # Only reached when the gate has run but nothing recorded the
+            # claims yet - a bare `card.py <ico>` outside a full run.
+            now_events.append({
+                "kind": "tender_open",
+                "value": f"otevřená zakázka: {tender.get('name', '')[:70]}",
+                "url": tender.get("url"),
+                "seen_at": tender.get("published") or tender.get("retrieved_at"),
+            })
 
     site = websites.get(ico, {})
 

@@ -385,6 +385,7 @@ EVENT_SOURCE = {
     "owner_departed":     ("ares", "ekonomicke-subjekty-vr"),
     "management_vacancy": ("mpsv", None),
     "subsidy_signed":     ("dotace_eu", None),
+    "tender_open":        ("nen", None),
 }
 
 
@@ -400,6 +401,13 @@ def describe(event):
     """
     if event["kind"] == "management_vacancy":
         return f"inzerát na řídící/plánovací roli: {event.get('title') or event['isco']}"
+    if event["kind"] == "tender_open":
+        left = event.get("days_left")
+        # The deadline is the actionable number here, not the age: it
+        # says how long there is left to bid.
+        when = (f", do uzávěrky {left} dní" if isinstance(left, int) and left >= 0
+                else ", po uzávěrce" if isinstance(left, int) else "")
+        return f"otevřená zakázka{when}: {(event.get('subject') or '')[:90]}"
     if event["kind"] == "subsidy_signed":
         try:
             millions = f"{float(event.get('total_czk') or 0) / 1e6:.1f} mil. Kč"
@@ -417,12 +425,21 @@ def describe(event):
     return f"{who}{role} — {verb}"
 
 
-def snapshot_for(archive, ico, kind):
-    """The archived document a given event was read from, or None."""
+def snapshot_for(archive, ico, kind, url=None):
+    """The archived document a given event was read from, or None.
+
+    `url` matters when a company has several documents from one source.
+    A company with two open tenders has two `nen` snapshots, and taking
+    the latest would attach both claims to whichever was fetched last -
+    so the event's own URL picks its own page. Registry and subsidy
+    events have one document per company and do not need it.
+    """
     source, endpoint = EVENT_SOURCE.get(kind, (None, None))
     if not source:
         return None
-    if endpoint:
+    if url:
+        row = archive.latest(ico, source, url=url)
+    elif endpoint:
         row = archive.latest(ico, source, url=f"{ARES_BASE}/{endpoint}/{ico}")
     else:
         row = archive.latest(ico, source)
@@ -460,7 +477,12 @@ def evidence_quote(event, text):
         return None
 
     anchors = []
-    if event["kind"] == "subsidy_signed":
+    if event["kind"] == "tender_open":
+        # The subject is printed on the tender page verbatim, so it is
+        # the anchor - and it is also what the card shows, which means
+        # the quote proves the very line the salesperson reads.
+        anchors.append((event.get("subject") or "")[:80])
+    elif event["kind"] == "subsidy_signed":
         anchors.append((event.get("project") or "")[:80])
     elif event["kind"] == "management_vacancy":
         anchors += [event.get("title") or "", str(event.get("isco") or "")]
@@ -486,7 +508,7 @@ def evidence_quote(event, text):
 
 
 def record(archive, company, history, window_days=30, run_id=None, today=None,
-           subsidies=None):
+           subsidies=None, tenders=None):
     """Turn one company's events into claims in the evidence store.
 
     Each event goes through evidence/verify.py like everything else. A
@@ -504,8 +526,10 @@ def record(archive, company, history, window_days=30, run_id=None, today=None,
 
     written, orphaned = 0, 0
     states = {"fact": 0, "inference": 0, "discard": 0}
-    for event in find(company, history, window_days, today, subsidies=subsidies):
-        snapshot_id = snapshot_for(archive, company["ico"], event["kind"])
+    for event in find(company, history, window_days, today,
+                      subsidies=subsidies, tenders=tenders):
+        snapshot_id = snapshot_for(archive, company["ico"], event["kind"],
+                                   url=event.get("url"))
         if snapshot_id is None:
             orphaned += 1
             continue
@@ -545,6 +569,7 @@ if __name__ == "__main__":
     # came up empty for companies that had a perfectly good reason.
     from pipeline.sources.dotace_eu import load as load_subsidies
     subsidies = load_subsidies()
+    tenders = load_tenders()
 
     if args.all:
         companies = {c["ico"]: c for c in load_companies()}
@@ -558,7 +583,8 @@ if __name__ == "__main__":
             totals = {"fact": 0, "inference": 0, "discard": 0}
             for company in companies.values():
                 count, missing, states = record(store, company, history, args.window,
-                                                run_id, subsidies=subsidies)
+                                                run_id, subsidies=subsidies,
+                                                tenders=tenders)
                 written += count
                 orphaned += missing
                 firms += 1 if count else 0

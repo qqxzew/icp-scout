@@ -210,7 +210,8 @@ def tenders_for(ico, session=None):
     return rows
 
 
-def with_detail(rows, session=None, register_people=(), domain=None):
+def with_detail(rows, session=None, register_people=(), domain=None,
+                archive=None, run_id=None):
     """Fetch each tender's own page and re-decide relevance on its CPV.
 
     One request per tender. Worth it: the codebook found nearly four
@@ -221,7 +222,8 @@ def with_detail(rows, session=None, register_people=(), domain=None):
     session = session or Session()
     for row in rows:
         try:
-            found = detail(row["url"], session, register_people, domain)
+            found = detail(row["url"], session, register_people, domain,
+                           archive=archive, ico=row.get("ico"), run_id=run_id)
         except Exception as error:
             row["detail_error"] = f"{type(error).__name__}: {error}"
             continue
@@ -303,12 +305,18 @@ def classify_contact(name, email, register_people, domain):
     return "external"
 
 
-def detail(url, session=None, register_people=(), domain=None):
+def detail(url, session=None, register_people=(), domain=None,
+           archive=None, ico=None, run_id=None):
     """Everything the tender's own page states, with the contact graded.
 
     One extra request per tender, which is why it is not done during the
     listing sweep: the listing answers "is this company buying at all",
     and only the few that are get read in full.
+
+    With an archive, the page text is stored before anything is read out
+    of it. Without that, a tender on a card cites a live URL that NEN can
+    edit, while every other line cites a snapshot that cannot change -
+    and "where did this come from" a month later would have no answer.
     """
     session = session or Session()
     page = session.get(url)
@@ -327,6 +335,15 @@ def detail(url, session=None, register_people=(), domain=None):
     # the encoded quote in front of it looks like part of a local-part to
     # a regex.
     text = strip_tags(page)
+
+    # Stored as the readable text, not the markup, and by the same
+    # normalisation everything else uses - so a quote taken from what the
+    # model or a person reads here is findable by evidence/verify.py.
+    if archive is not None and ico:
+        snapshot_id, _ = archive.store(ico, "nen", text, url=url,
+                                       run_id=run_id, kind="tender")
+        fields["snapshot_id"] = snapshot_id
+
     email = EMAIL.search(text)
     phone = PHONE.search(text)
     phone_value = " ".join(phone.group(0).split()) if phone else None
@@ -417,7 +434,7 @@ def subsidised_candidates():
     return sorted(load_subsidies())
 
 
-def run_all(limit=None, output=OUTPUT, icos=None):
+def run_all(limit=None, output=OUTPUT, icos=None, archive=None):
     """Ask NEN about a set of companies - one request each, deliberately.
 
     Defaults to the subsidised set rather than the whole base; pass
@@ -428,6 +445,7 @@ def run_all(limit=None, output=OUTPUT, icos=None):
     icos = (icos if icos is not None else subsidised_candidates())[:limit]
     output.parent.mkdir(parents=True, exist_ok=True)
     people, domains = register_people(), proven_domains()
+    run_id = archive.start_run(note="nen tender sweep") if archive else None
 
     found = with_tender = 0
     with open(output, "w", encoding="utf-8") as sink:
@@ -436,7 +454,8 @@ def run_all(limit=None, output=OUTPUT, icos=None):
                 rows = tenders_for(ico, session)
                 if rows:
                     rows = with_detail(rows, session,
-                                       people.get(ico, ()), domains.get(ico))
+                                       people.get(ico, ()), domains.get(ico),
+                                       archive=archive, run_id=run_id)
             except Exception as error:
                 print(f"  {ico}: {type(error).__name__} {error}", file=sys.stderr)
                 continue
@@ -468,11 +487,17 @@ if __name__ == "__main__":
     parser.add_argument("--every-candidate", action="store_true",
                         help="all 3299 instead - ~2.4 h, and measured to add nothing")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--archive", action="store_true",
+                        help="store each tender page, so a claim can cite it")
     args = parser.parse_args()
 
     if args.all or args.every_candidate:
         icos = load_candidates() if args.every_candidate else None
-        raise SystemExit(0 if run_all(args.limit, icos=icos) is not None else 1)
+        store = None
+        if args.archive:
+            from pipeline.evidence.archive import Archive
+            store = Archive()
+        raise SystemExit(0 if run_all(args.limit, icos=icos, archive=store) is not None else 1)
     if not args.ico:
         parser.error("give --ico or --all")
 

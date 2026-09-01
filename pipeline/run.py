@@ -283,7 +283,7 @@ def stage_refresh(archive, run_id, days):
     return {"registry_refreshed": len(icos), "registry_meta": meta}
 
 
-def stage_gate(window_days):
+def stage_gate(window_days, archive=None, run_id=None):
     """NOW: who has a dated reason this week. Everything else stops here.
 
     The negative filter runs here, before the gate rather than after it,
@@ -293,7 +293,8 @@ def stage_gate(window_days):
     and an LLM pass to produce a card nobody can act on.
     """
     from pipeline.filters.negative import EXCLUDE, verdict
-    from pipeline.signals.now import find, load_companies, load_history, load_tenders
+    from pipeline.signals.now import (find, load_companies, load_history,
+                                      load_tenders, record)
     from pipeline.sources.dotace_eu import load as load_subsidies
 
     companies = list(load_companies(CANDIDATES))
@@ -314,6 +315,27 @@ def stage_gate(window_days):
           f"(insolvency, liquidation)", file=sys.stderr)
     print(f"  {len(qualified)} of {len(companies)} companies have a dated event",
           file=sys.stderr)
+
+    # Record what the gate found, for the companies it let through only.
+    # Without this a run gates correctly and then renders a card with an
+    # empty "why now": the events existed in memory and were never
+    # written, so nothing downstream could cite them. Recording here
+    # rather than in a stage of its own keeps the claim and the decision
+    # it justified in the same place.
+    if archive is not None:
+        by_ico = {c["ico"]: c for c in companies}
+        states = {"fact": 0, "inference": 0, "discard": 0}
+        orphaned = 0
+        for ico in qualified:
+            _, missing, counts = record(archive, by_ico[ico], history, window_days,
+                                        run_id, subsidies=subsidies, tenders=tenders)
+            orphaned += missing
+            for state, n in counts.items():
+                states[state] += n
+        print(f"  claims recorded: {states}"
+              + (f", {orphaned} without a snapshot" if orphaned else ""),
+              file=sys.stderr)
+
     return qualified
 
 
@@ -428,7 +450,7 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
             archive, run_id, refresh_days or window_days)
 
     print("\n[gate]", file=sys.stderr)
-    qualified = stage_gate(window_days)
+    qualified = stage_gate(window_days, archive, run_id)
     report["stages"]["gate"] = len(qualified)
 
     if not qualified:
