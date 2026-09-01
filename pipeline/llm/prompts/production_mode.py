@@ -47,7 +47,7 @@ import sys
 from collections import Counter
 
 from pipeline.evidence.archive import Archive, digest, normalize
-from pipeline.evidence.verify import check_many_against_any
+from pipeline.evidence.verify import check_against_any
 from pipeline.llm.client import LLM, usage_summary
 from pipeline.scoring.select import WEBSITES, load_jsonl
 from pipeline.sources.mpsv import load as load_vacancies, texts as vacancy_texts
@@ -261,9 +261,21 @@ def run(sample_size=None, icos=None):
         answer = llm.complete(PROMPT_NAME, PROMPT_VERSION, SYSTEM,
                               user_prompt(documents), SCHEMA)
 
-        verified, summary = check_many_against_any(
-            archive, ico, "production_mode", answer["findings"], snapshot_ids, run_id,
-        )
+        # The side is written into the claim's kind - production_mode:serial,
+        # production_mode:made_to_order - because a claim that only says
+        # "production_mode" answers "did the model find something" and not
+        # the ICP's first question, WHICH mode. fit_assessment() reads the
+        # suffix back; a bare kind made the verified verdict unreadable at
+        # selection time and fit fell back to the regex, which is blind to
+        # anything the vacancy set no longer says.
+        verified, summary = [], {"fact": 0, "inference": 0, "discard": 0}
+        for finding in answer["findings"]:
+            result = check_against_any(
+                archive, ico, f"production_mode:{finding['side']}",
+                finding.get("value"), finding.get("quote"), snapshot_ids, run_id,
+            )
+            verified.append(result)
+            summary[result["state"]] += 1
 
         sides_confirmed = {r["value"] for r in verified if r["state"] == "fact"}
         sides = {item["side"] for item, r in zip(answer["findings"], verified)

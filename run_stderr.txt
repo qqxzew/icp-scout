@@ -1,9 +1,36 @@
-run 76 · ICP from web\icp.json
+run 80 · ICP from web\icp.json
 
 [gate]
   12 excluded by negative filters (insolvency, liquidation)
   3 of 3299 companies have a dated event
   claims recorded: {'fact': 4, 'inference': 0, 'discard': 0}
+
+[agents]
+companies in sample: 3
+  00560383  docs=6  sides=['made_to_order']  {'fact': 2, 'inference': 0, 'discard': 1}
+  27975924  docs=6  sides=['made_to_order', 'serial']  {'fact': 2, 'inference': 1, 'discard': 0}
+  46710043  docs=6  sides=['made_to_order']  {'fact': 2, 'inference': 0, 'discard': 1}
+
+label distribution across 3 companies:
+  ('made_to_order',): 2
+  ('made_to_order', 'serial'): 1
+
+evidence verification totals: {'fact': 6, 'inference': 1, 'discard': 2}
+
+cost: {'calls': 222, 'cost_usd': 0.2867}
+companies in sample: 3
+  00560383  docs=6  signs=['manual_data']  {'fact': 1, 'inference': 0, 'discard': 2}
+  27975924  docs=6  signs=['manual_data', 'scale', 'tacit_knowledge']  {'fact': 3, 'inference': 2, 'discard': 2}
+  46710043  docs=6  signs=['manual_data', 'scale']  {'fact': 3, 'inference': 0, 'discard': 0}
+
+signs confirmed across 3 companies: {'manual_data': 3, 'scale': 2, 'tacit_knowledge': 1}
+evidence verification totals: {'fact': 7, 'inference': 2, 'discard': 4}
+cost: {'calls': 225, 'cost_usd': 0.2867}
+companies whose site names a turnover: 0
+
+scope: {}
+verification: {}
+cost: {'calls': 225, 'cost_usd': 0.2867}
 
 [select]
 

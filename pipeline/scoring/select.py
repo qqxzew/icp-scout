@@ -169,6 +169,101 @@ def vacancy_richness(vacancies):
     return {"vacancy_count": len(vacancies), "vacancy_text_count": texts}
 
 
+# The ICP's own production divisions against the service ones that were
+# added to widen the field (CLAUDE.md 11: the five ICP examples span
+# three NACE sections, so "section C only" contradicted the brief). The
+# widening was right for candidate selection and wrong to forget at
+# selection time: NACE 41 construction qualified through the gate on a
+# genuine board change and reached the salesperson with nothing anywhere
+# asking "is this a manufacturer at all".
+NACE_CORE = {"16", "18", "22", "23", "25", "26", "27", "28", "31", "32", "33"}
+NACE_SERVICE = {"38", "41", "42", "43", "49", "77", "81", "95"}
+
+# Order in which production-mode verdicts match the ICP's first
+# criterion. Lower is better. serial is the one the ICP explicitly
+# rules out; unknown ranks between the two, because absence of evidence
+# is not evidence of the wrong mode (hypothesis E).
+MODE_RANK = {
+    "made_to_order": 0, "mixed": 0, "small_batch": 0, "leaning_made_to_order": 0,
+    "unknown": 1,
+    "leaning_serial": 2, "serial": 3,
+}
+
+
+def fit_assessment(archive, company, site_status=None):
+    """How well this company matches the ICP - from evidence already held.
+
+    This existed as data and not as a decision: the KVAZAR miss showed
+    the disqualifying sentence ("realizuje výstavbu a rekonstrukce
+    staveb") sitting verified in the archive while selection counted it
+    as +1 richness. The scorer asked "how much can we prove about this
+    company" and never "is this the ICP's company" - so a construction
+    firm with a rich site outranked its own evidence.
+
+    Nothing here excludes. Per RTsoft's answer ("je potřeba ty leady
+    vidět a pak v nich hledat vodítka") and the log's 22.3, a poor fit
+    is said on the card and sinks in the ordering; the human decides.
+    """
+    ico = company.get("ico")
+    division = (company.get("nace") or "")[:2]
+    tier = ("core" if division in NACE_CORE
+            else "service" if division in NACE_SERVICE else "other")
+
+    # Verified agent claims first: they carry the side in their kind
+    # (production_mode:made_to_order) and survive vacancy rotation -
+    # ŠROUBY Krupka's "výroba dle výkresové dokumentace" lives in a job
+    # ad that has since left MPSV's current export, so the archive's
+    # verified claim is the only place the mode still exists. The regex
+    # scan over current documents is the fallback, not the authority.
+    sides = set()
+    for claim in archive.claims(ico):
+        if claim["kind"].startswith("production_mode:") and claim["state"] == "fact":
+            sides.add(claim["kind"].split(":", 1)[1])
+    if sides:
+        if "made_to_order" in sides and "serial" in sides:
+            agent_mode = "mixed"
+        elif "made_to_order" in sides:
+            agent_mode = "made_to_order"
+        elif "small_batch" in sides:
+            agent_mode = "small_batch"
+        else:
+            agent_mode = "serial"
+        return {
+            "nace_tier": tier, "mode": agent_mode, "mode_basis": "agent_fact",
+            "rank": ({"core": 0, "other": 1, "service": 2}[tier],
+                     MODE_RANK.get(agent_mode, 1)),
+        }
+
+    findings = []
+    status = (site_status or {}).get(ico, {}).get("status")
+    if site_status is None or status == "proven":
+        for row, text in archive.documents(ico, source="website"):
+            if text:
+                findings += mode_signal.scan(text, row["kind"] or "website")
+    # Vacancy text is scanned regardless of the site status - it comes
+    # from MPSV keyed by ICO, so it cannot belong to the wrong company.
+    # And it matters: ŠROUBY Krupka's "výroba dle výkresové dokumentace
+    # zákazníka" lives in a job ad, not on the site, and scanning the
+    # site alone left its mode unknown while the proof sat in the
+    # archive.
+    for row, text in archive.documents(ico, source="mpsv_text"):
+        if text:
+            findings += mode_signal.scan(text, "vacancy")
+    verdict = mode_signal.classify(findings)
+
+    return {
+        "nace_tier": tier,
+        "mode": verdict["mode"],
+        "mode_basis": verdict.get("basis"),
+        # The sort key: NACE tier first, production mode second. FIT
+        # orders the groups, PAIN orders inside them - the two-stage
+        # shape the selection was always meant to have, now actually
+        # wired to evidence.
+        "rank": ({"core": 0, "other": 1, "service": 2}[tier],
+                 MODE_RANK.get(verdict["mode"], 1)),
+    }
+
+
 def verified_richness(archive, ico):
     """Claims that survived evidence/verify.py, split by how they are held.
 
@@ -222,18 +317,20 @@ def pain_score(website, contact, vacancy, now_event_count, verified=None):
     )
 
 
-def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events):
+def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events, company=None):
     site = websites.get(ico, {})
     web_r = website_richness(archive, ico, websites)
     contact_r = contact_richness(contacts.get(ico))
     vac_r = vacancy_richness(vacancies_by_ico.get(ico, []))
     verified_r = verified_richness(archive, ico)
+    fit = fit_assessment(archive, company or {"ico": ico}, websites)
     score = pain_score(web_r, contact_r, vac_r, len(events), verified_r)
     return {
         "ico": ico,
         "site_status": site.get("status"),
         "site_domain": site.get("domain"),
         "now_events": events,
+        "fit": fit,
         "pain": {"website": web_r, "contact": contact_r, "vacancy": vac_r,
                  "verified": verified_r},
         "pain_score": score,
@@ -271,10 +368,16 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
     by_ico = {c["ico"]: c for c in companies}
 
     ranked = [
-        evaluate(ico, archive, websites, contacts, vacancies_by_ico, events)
+        evaluate(ico, archive, websites, contacts, vacancies_by_ico, events,
+                 company=by_ico.get(ico))
         for ico, events in qualified.items()
     ]
-    ranked.sort(key=lambda r: r["pain_score"], reverse=True)
+    # FIT orders the groups, PAIN orders inside them. Sorting purely on
+    # pain_score is what let a construction firm with a rich site sit
+    # level with manufacturers: the score measures how much we can
+    # prove, and proof of the wrong trade counted the same as proof of
+    # the right one.
+    ranked.sort(key=lambda r: (r["fit"]["rank"], -r["pain_score"]))
 
     for row in ranked:
         row["name"] = by_ico[row["ico"]].get("name")

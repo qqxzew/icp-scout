@@ -37,7 +37,7 @@ from datetime import date
 from pathlib import Path
 
 from pipeline.evidence.archive import Archive
-from pipeline.scoring.select import CONTACTS, WEBSITES, load_jsonl
+from pipeline.scoring.select import CONTACTS, WEBSITES, fit_assessment, load_jsonl
 from pipeline.signals.now import load_tenders, parse_deadline as parse_tender_deadline
 
 TURNOVER_CACHE = Path("data/raw/turnover.jsonl")
@@ -300,6 +300,10 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         "turnover_site": turnover_from_site(archive, ico),
         "certificates": certificates_for(ico),
         "website": {"domain": site.get("domain"), "status": site.get("status")},
+        # Fit is said on the card, not only used in the ordering: the
+        # salesperson seeing "stavební firma, mimo jádro ICP" before
+        # dialling is the whole point of having assessed it.
+        "fit": fit_assessment(archive, company or {"ico": ico}, websites),
         "contacts": people,
         # Kept apart from `contacts` rather than merged into it. A tender
         # contact is the person handling THAT purchase, which is both
@@ -371,6 +375,24 @@ def render(card):
         row("Velikost", card.get("size"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
         row("NACE", card.get("nace"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
     ]
+
+    # The ICP's first criterion, answered from evidence rather than
+    # assumed - and the row that was missing when a construction firm
+    # reached a card with nothing saying so.
+    fit = card.get("fit") or {}
+    MODE_CZ = {"made_to_order": "zakázková (přímé tvrzení)",
+               "mixed": "zakázková i sériová (přímá tvrzení)",
+               "small_batch": "malosériová (přímé tvrzení)",
+               "leaning_made_to_order": "spíše zakázková (nepřímé stopy)",
+               "leaning_serial": "spíše sériová (nepřímé stopy)",
+               "serial": "sériová (přímé tvrzení)",
+               "unknown": ""}
+    mode_note = MODE_CZ.get(fit.get("mode"), "")
+    tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
+                 if fit.get("nace_tier") == "service" else "")
+    joined = " · ".join(x for x in (mode_note, tier_note) if x)
+    out.append(row("Režim výroby", joined,
+                   f"https://{card['website']['domain']}" if card["website"].get("domain") else ""))
 
     # Two independent sources, two rows - never merged. The register's
     # figure is audited; the website's is the company talking about
@@ -525,3 +547,4 @@ if __name__ == "__main__":
         print(json.dumps(cards, ensure_ascii=False, indent=2))
 
     archive.close()
+
