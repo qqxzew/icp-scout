@@ -90,18 +90,40 @@ FIELDS = {
     "Lhůta podání nabídek": "deadline",
 }
 
-# What makes a tender interesting for RTsoft. Deliberately wider than the
-# four words RTsoft named for subsidies (ERP, informační systém, MES,
-# WMS): they said "dala by se hledat i jiná klíčová slova, ale teď stačí
-# takto", and a tender's name is more specific than a subsidy's, so
-# there is room to catch the shop-floor wording the ICP actually cares
-# about - terminals, data collection, production planning.
+# WHAT COUNTS AS AN INTERESTING SUBJECT - CODEBOOK FIRST, WORDS SECOND.
+#
+# Every tender is classified against CPV, the EU procurement codebook,
+# by the buyer themselves. That is a structured fact where a keyword
+# pattern is a guess, and the measurement was decisive: of 74 open
+# tenders this regex rejected, 11 were IT by CPV - including
+# "Rozšíření informačního systému BYZNYS" (a Czech ERP),
+# "Digitální transformace ve společnosti PILA MARTINŮ" and
+# "Pořízení a implementace CAD/PDM SW". The names say "digitalizace" and
+# "digitální podnik", words no sensible pattern would have contained,
+# and CPV files them correctly regardless. Open relevant tenders went
+# from 4 to 15 on the same data.
+#
+#   48     software packages and information systems
+#   72     IT services - programming, implementation, support
+#   42961  control and command systems, which is where MES and shop
+#          floor automation land rather than under software
+RELEVANT_CPV = ("48", "72", "42961")
+
+# Kept as a second chance, not as the rule. CPV is assigned by the buyer
+# and is sometimes generic ("44" for a machine that happens to include
+# planning software), so a name that says ERP outright still counts even
+# when the code does not.
 SUBJECT = re.compile(
     r"(?i)\bERP\b|\bMES\b|\bWMS\b|\bAPS\b|informa[cč]n[ií]\s*syst[ée]m|"
     r"[rř][ií]zen[ií]\s*v[ýy]roby|pl[aá]nov[aá]n[ií]\s*v[ýy]roby|"
     r"v[ýy]robn[ií]\s*syst[ée]m|termin[aá]l|[cč]&#x00E1;rov|čárov[ée]\s*k[oó]dy|"
     r"sb[eě]r\s*dat|dispe[cč]|sklado[vw]"
 )
+
+
+def relevant_cpv(code):
+    """Whether a CPV code names something RTsoft could supply."""
+    return bool(code) and any(code.startswith(p) for p in RELEVANT_CPV)
 
 
 class Session:
@@ -176,12 +198,35 @@ def tenders_for(ico, session=None):
     """
     session = session or Session()
     ico = str(ico).zfill(8)
-    html = session.get(f"{LISTING}/p:vz:zadavatelICO={ico}")
-    rows = parse_rows(html)
+    page = session.get(f"{LISTING}/p:vz:zadavatelICO={ico}")
+    rows = parse_rows(page)
     for row in rows:
         row["ico"] = ico
+        # Provisional: the listing carries no CPV, so this is the weaker
+        # of the two tests. with_detail() replaces it once the code is
+        # known.
         row["relevant"] = bool(SUBJECT.search(row.get("name") or ""))
         row["retrieved_at"] = date.today().isoformat()
+    return rows
+
+
+def with_detail(rows, session=None, register_people=(), domain=None):
+    """Fetch each tender's own page and re-decide relevance on its CPV.
+
+    One request per tender. Worth it: the codebook found nearly four
+    times as many relevant open tenders as the name pattern did, and it
+    also brings the publication date and the contact, neither of which
+    the listing carries.
+    """
+    session = session or Session()
+    for row in rows:
+        try:
+            found = detail(row["url"], session, register_people, domain)
+        except Exception as error:
+            row["detail_error"] = f"{type(error).__name__}: {error}"
+            continue
+        row.update(found)
+        row["relevant"] = relevant_cpv(row.get("cpv")) or row["relevant"]
     return rows
 
 
@@ -320,6 +365,40 @@ def load_candidates(path=CANDIDATES):
         return [json.loads(line)["ico"] for line in handle if line.strip()]
 
 
+def register_people(path=CANDIDATES):
+    """ICO -> names of directors and owners, for grading tender contacts."""
+    out = {}
+    if not Path(path).exists():
+        return out
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            names = [p.get("name") for p in
+                     (row.get("directors") or []) + (row.get("owners") or [])
+                     if p.get("name")]
+            out[row["ico"]] = names
+    return out
+
+
+def proven_domains(path=Path("data/raw/websites.jsonl")):
+    """ICO -> domain, but only where website.py actually proved ownership.
+
+    A guessed domain must not grade a contact: by website.py's own
+    measurement 46 % of resolved guesses belong to someone else, so
+    matching an email against one would promote a stranger's address to
+    "the company's own".
+    """
+    out = {}
+    if not Path(path).exists():
+        return out
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            if row.get("status") == "proven" and row.get("domain"):
+                out[row["ico"]] = row["domain"]
+    return out
+
+
 def subsidised_candidates():
     """Only the companies that have any EU subsidy at all.
 
@@ -348,12 +427,16 @@ def run_all(limit=None, output=OUTPUT, icos=None):
     session = Session()
     icos = (icos if icos is not None else subsidised_candidates())[:limit]
     output.parent.mkdir(parents=True, exist_ok=True)
+    people, domains = register_people(), proven_domains()
 
     found = with_tender = 0
     with open(output, "w", encoding="utf-8") as sink:
         for index, ico in enumerate(icos, 1):
             try:
                 rows = tenders_for(ico, session)
+                if rows:
+                    rows = with_detail(rows, session,
+                                       people.get(ico, ()), domains.get(ico))
             except Exception as error:
                 print(f"  {ico}: {type(error).__name__} {error}", file=sys.stderr)
                 continue
@@ -362,6 +445,7 @@ def run_all(limit=None, output=OUTPUT, icos=None):
                 found += len(rows)
                 for row in rows:
                     sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+                sink.flush()   # so a long sweep can be watched, not guessed at
                 relevant = [r for r in rows if r["relevant"]]
                 if relevant:
                     print(f"  {ico}  {len(rows)} tender(s), "
