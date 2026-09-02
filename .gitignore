@@ -229,3 +229,6 @@ __marimo__/
 # Project data: bulk registry snapshots and the evidence archive.
 # Large and re-downloadable - never committed.
 data/
+
+# Backups of the saved brief are the saved brief.
+web/icp.json.*
