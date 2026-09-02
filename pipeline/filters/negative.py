@@ -99,10 +99,15 @@ IN_LIQUIDATION = re.compile(r"(?i)\bv\s+likvidaci\b")
 EXCLUDE = "exclude"
 DEPRIORITISE = "deprioritise"
 
-# How much a deprioritising finding costs in the ranking. Not a
-# calibrated weight - a stated preference: one such finding should push
-# a company below an otherwise equal candidate without erasing it.
-PENALTY = {DEPRIORITISE: 8}
+# A deprioritising finding costs one step in the ordering, not a number
+# of points. It was points - PENALTY = {DEPRIORITISE: 8} - and two
+# things were wrong with that: nothing anywhere ever subtracted it, so
+# "ranked lower, never silently dropped" was a promise the code did not
+# keep; and 8 was uncalibrated against a score with no ceiling, so it
+# would have either swamped a thin card or vanished under a rich one.
+# An ordering step says precisely what was meant - below any otherwise
+# equal candidate - without inventing a scale. See scoring/select.py's
+# ordering().
 
 
 def check(company):
@@ -159,9 +164,15 @@ def verdict(company):
     return "ok"
 
 
-def penalty(company):
-    """Score to subtract in ranking. Excluded companies never get here."""
-    return sum(PENALTY.get(f["level"], 0) for f in check(company))
+def demotes(findings):
+    """Whether these findings push a company down the ordering.
+
+    Takes findings rather than a company so the caller that already
+    holds them - it needs them for the card anyway - does not run every
+    check twice. One definition of what "deprioritise" does, in the
+    module that defines what it means.
+    """
+    return any(finding["level"] == DEPRIORITISE for finding in findings)
 
 
 def load_companies(path=CANDIDATES):
