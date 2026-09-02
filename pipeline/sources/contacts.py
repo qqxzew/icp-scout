@@ -599,7 +599,15 @@ def get_contacts(ico, site, company, fetcher=None, archive=None):
         "retrieved_at": date.today().isoformat(),
     }
 
-    if not site or site.get("status") not in ("proven", "probable") or not site.get("domain"):
+    # Proven domains only. A "probable" domain matched the company name
+    # and nothing else, and website.py's own measurement says 46 % of
+    # those belong to somebody else - so a contact read from one is a
+    # stranger's e-mail filed under this ICO. Reading them was a
+    # deliberate choice once, on the reasoning that the card would mark
+    # the doubt; it did not survive contact with a real run, where
+    # ROMKA s.r.o. reached the week's top five carrying a contact off an
+    # unrelated person's site.
+    if not site or site.get("status") != "proven" or not site.get("domain"):
         result["status"] = "no_site"
         return result
 
@@ -703,7 +711,7 @@ def run_all(limit=None, workers=8, archive=None):
     todo = [
         ico for ico, site in sites.items()
         if ico not in done
-        and site.get("status") in ("proven", "probable")
+        and site.get("status") == "proven"          # see get_contacts()
         and site.get("domain")
         and ico in companies
     ]

@@ -140,8 +140,50 @@ def price_for(model, usage, mode, cached=False):
     return round(cost, 6)
 
 
+# ---------------------------------------------------------------------------
+# Spend ceiling
+# ---------------------------------------------------------------------------
+#
+# A hard stop, not a warning. The agents are pull-based: they run over
+# whatever the NOW gate hands them, and the gate's size depends on how
+# much the register moved that week - so "how much will this run cost"
+# is not knowable before it starts. An unattended run therefore needs a
+# number it cannot cross, set from the outside:
+#
+#     ICP_LLM_BUDGET_USD=3 python -m pipeline.run
+#
+# Counted per process rather than from the usage log, because the log is
+# cumulative over every run ever made and the ceiling is about this one.
+# Cache hits cost nothing and do not count. When the ceiling is reached
+# the call raises: run.py already catches a failing agent per stage, so
+# the run finishes with the evidence it had rather than dying, and the
+# stderr line says which agent stopped and why.
+BUDGET_USD = float(os.environ.get("ICP_LLM_BUDGET_USD") or 0)
+
+_spent = 0.0
+
+
+class BudgetExhausted(RuntimeError):
+    """Raised instead of making a call that would cross the ceiling."""
+
+
+def spent():
+    """USD billed by this process so far."""
+    return round(_spent, 4)
+
+
+def check_budget():
+    if BUDGET_USD and _spent >= BUDGET_USD:
+        raise BudgetExhausted(
+            f"LLM budget of ${BUDGET_USD:.2f} reached (spent ${_spent:.4f}) - "
+            f"no further calls in this run"
+        )
+
+
 def log_usage(model, prompt_name, mode, usage, cost, cached, from_cache):
     USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    global _spent
+    _spent += cost or 0.0
     row = {
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "model": model, "prompt": prompt_name, "mode": mode,
@@ -189,6 +231,11 @@ class LLM:
                 log_usage(self.model, prompt_name, "sync", hit["usage"], 0.0,
                           cached=False, from_cache=True)
                 return hit["result"]
+
+        # Checked after the cache, before the network: a cached answer
+        # costs nothing and should still be served once the ceiling is
+        # reached.
+        check_budget()
 
         response = self.client.chat.completions.create(
             model=self.model,

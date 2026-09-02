@@ -76,8 +76,22 @@ PROMPT_VERSION = 1
 # so the cap was buying nothing it cost. 8000 sits just under the 90th
 # percentile of page length (9678), which keeps whole pages whole
 # without letting one enormous page eat a prompt.
-MAX_CHARS_PER_DOCUMENT = 8000
-MAX_DOCUMENTS = 6
+#
+# RAISED AGAIN, DELIBERATELY. The numbers below are no longer the
+# cheapest defensible ones - they are the ones that stop the budget from
+# deciding what the agent gets to read. Companies with ten harvested
+# URLs were losing four of them on every call, and a page cut at 8000
+# characters is a page whose second half was paid for, stored, and never
+# looked at. At gpt-4.1-mini prices this costs roughly three cents per
+# company per prompt instead of one, over the ten to thirty companies a
+# weekly gate lets through - a rounding error against the cost of
+# missing the one sentence that says how the company actually works.
+#
+# The old reasoning still holds for anyone who needs it cheap: 8000
+# sits just under the 90th percentile of page length (9678) and the
+# measured A/B of 2500 vs 8000 was 16 vs 18 verified facts.
+MAX_CHARS_PER_DOCUMENT = 16000
+MAX_DOCUMENTS = 12
 
 # Which pages are worth a slot when there are more than MAX_DOCUMENTS.
 # Measured need: OK Záchlumí and TNS SERVIS both have 10 harvested URLs,
@@ -95,7 +109,7 @@ KIND_PRIORITY = ("career", "production", "about", "certificates",
 # /o-nas/o-spolecnosti entirely - the page carrying "Roční produkce
 # 15 mil. ks", which is the single strongest scale fact that company
 # publishes. Breadth beats depth when the budget is six documents.
-MAX_PER_KIND = 2
+MAX_PER_KIND = 3
 
 SYSTEM = """Jsi analytik, který z textu webu firmy a jejích pracovních \
 inzerátů zjišťuje, jakým způsobem firma vyrábí: na zakázku \

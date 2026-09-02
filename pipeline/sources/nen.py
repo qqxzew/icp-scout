@@ -48,6 +48,7 @@ Run:
 """
 
 import argparse
+import gzip
 import html
 import json
 import re
@@ -67,7 +68,12 @@ CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
 
 USER_AGENT = "icp-scout/0.1 (+https://github.com/qqxzew/icp-scout)"
 TIMEOUT = 45
-DELAY = 0.6          # seconds between requests; nothing here is urgent
+# Seconds between requests. Was 0.6, and a sweep of the whole base
+# measured what that costs: NEN began answering 503 and timing out after
+# roughly 800 companies. The site is a public register run for other
+# purposes, the retry only papers over the refusal, and nothing here is
+# urgent - so the sweep is slowed rather than pushed.
+DELAY = 2.0
 
 # Same policy as ares.py, for the same reason: a 5xx during a long sweep
 # means the server is busy, not that the answer is empty.
@@ -139,7 +145,14 @@ class Session:
         self.jar = CookieJar()
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.jar))
-        self.opener.addheaders = [("User-Agent", USER_AGENT)]
+        # urllib does not ask for compression on its own, and NEN does
+        # not volunteer it: every listing page arrived as 201 kB of raw
+        # HTML. Measured over a full sweep of the base that is about
+        # 2 GB of traffic for perhaps 300 kB of tender rows. Asking for
+        # gzip costs one header and takes the same page to roughly a
+        # fifth of that - and it is NEN's bandwidth as much as ours.
+        self.opener.addheaders = [("User-Agent", USER_AGENT),
+                                  ("Accept-Encoding", "gzip")]
         self._last = 0.0
         self.get(BASE + "/")          # sets the session cookie
 
@@ -159,6 +172,11 @@ class Session:
             try:
                 with self.opener.open(url, timeout=TIMEOUT) as response:
                     body = response.read()
+                    # Only when the server actually used it: asking for
+                    # gzip does not oblige anyone to send it, and
+                    # decompressing plain HTML would fail on every page.
+                    if response.headers.get("Content-Encoding") == "gzip":
+                        body = gzip.decompress(body)
                 self._last = time.monotonic()
                 return body.decode("utf-8", "replace")
             except urllib.error.HTTPError as error:
@@ -378,8 +396,18 @@ def parse_deadline(value):
 def load_candidates(path=CANDIDATES):
     if not Path(path).exists():
         return []
+    # skip a line still being written: the candidate file grows during a
+    # run, and one truncated row must not abort an hours-long sweep
+    icos = []
     with open(path, encoding="utf-8") as handle:
-        return [json.loads(line)["ico"] for line in handle if line.strip()]
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                icos.append(json.loads(line)["ico"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return icos
 
 
 def register_people(path=CANDIDATES):
@@ -389,7 +417,10 @@ def register_people(path=CANDIDATES):
         return out
     with open(path, encoding="utf-8") as handle:
         for line in handle:
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # same reason as load_candidates above
             names = [p.get("name") for p in
                      (row.get("directors") or []) + (row.get("owners") or [])
                      if p.get("name")]
