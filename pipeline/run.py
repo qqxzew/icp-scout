@@ -11,7 +11,9 @@ pull-based rather than pushed over the whole base (log 22.8):
                 which of our companies changed (~30 a week, measured
                 0.91%), so 30 get re-fetched instead of 3299. Plus MPSV
                 vacancies and the monthly subsidy file.
-    3 gate      NOW - a dated event or the company does not proceed
+    3 gate      the saved brief (industry, size, region), the negative
+                filters, then NOW - a dated event or the company stops
+                here
     4 enrich    site, contacts, certificates FOR THE GATED FEW ONLY.
                 This is the ~90-minute stage over the full base, and it
                 is the reason the gate comes first: ten companies is
@@ -229,17 +231,28 @@ def default_icp():
     `location` is the brief's own geography, CLAUDE.md §2: "preferovaně
     Plzensky kraj -> Karlovarsky, Jihocesky, Stredocesky, Praha (~150
     km)" - RTsoft sits in Plzen and drives to the shop floor. It is a
-    priority ("preferovaně"), not a filter ("pouze"), so it is carried
-    here as a radius around Plzen for the screen to show pre-filled,
-    not as a hard cut anything in the pipeline enforces.
+    priority ("preferovaně") in the ICP document - but the salesperson
+    using the tool overruled that: a radius on the screen is a promise
+    about what comes back, so filters/brief.py enforces it whoever set
+    it. `from_default` is kept as a record of who chose the number, not
+    as a switch: nothing branches on it any more.
     """
-    from pipeline.sources.res_bulk import ICP_FORMA, ICP_KATPO, ICP_NACE
+    from pipeline.sources.res_bulk import (ICP_FORMA, ICP_KATPO, ICP_KATPO_UNKNOWN,
+                                           ICP_NACE)
     return {
-        "nace": sorted(ICP_NACE), "katpo": sorted(ICP_KATPO), "forma": sorted(ICP_FORMA),
+        "nace": sorted(ICP_NACE),
+        # Both the sized bands and the unsized tier. The brief admits a
+        # company whose headcount the register never recorded - refusing
+        # it would be reading absence as a negative answer - while
+        # res_bulk decides separately how such a company is ever
+        # enriched, which is not the same question.
+        "katpo": sorted(ICP_KATPO + ICP_KATPO_UNKNOWN),
+        "forma": sorted(ICP_FORMA),
         "regions": None,
         "location": {
             "from": "Plzeň", "km": 150,
             "origin": {"name": "Plzeň", "lat": 49.7529, "lon": 13.3566},
+            "from_default": True,
         },
     }
 
@@ -297,58 +310,219 @@ def load_icp():
     return icp
 
 
-def stage_refresh(archive, run_id, days):
+def save_candidates(updated, path=CANDIDATES):
+    """Write refreshed companies back into the candidate file, atomically.
+
+    THE REFRESH USED TO REFRESH NOTHING THE GATE COULD SEE. get_company()
+    archives each raw ARES response - which is what a claim later cites -
+    and returns the parsed company, and stage_refresh threw that return
+    value away. The gate reads this file, so a board change picked up on
+    Monday sat in the evidence store while the gate went on reading a
+    snapshot from the week before. Measured on the live data: the file's
+    newest registry date was 25.08 on a run made on 01.09, so a 7-day
+    window covered one day of actual data.
+
+    Rewritten whole rather than edited in place: JSONL rows are variable
+    length, so changing one means rewriting the tail regardless, and
+    3299 rows cost milliseconds. Lines nobody refreshed are copied
+    across untouched rather than re-serialised - a rewrite should not
+    quietly reformat, or drop, 3269 rows it was not asked about. Written
+    to a temporary file and renamed, for the reason res_bulk.download()
+    gives: a half-written candidate list looks exactly like a complete
+    short one.
+    """
+    path = Path(path)
+    if not updated or not path.exists():
+        return 0
+
+    lines, replaced = [], 0
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            try:
+                ico = json.loads(line).get("ico")
+            except json.JSONDecodeError:
+                ico = None
+            if ico in updated:
+                lines.append(json.dumps(updated[ico], ensure_ascii=False))
+                replaced += 1
+            else:
+                lines.append(line)
+
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return replaced
+
+
+# How many companies the change stream may add to the base in one run.
+#
+# A ceiling, because the intake is unbounded by nature: 4 549 companies
+# changed nationally in one week that are not ours, and the share of
+# them the brief accepts is not something the run controls. Enriching
+# every match is four ARES requests each - measured at 21 s per request
+# on a slow evening, so a few hundred matches is a night rather than a
+# stage. The ones left over are not lost work: they keep changing, and
+# the register keeps saying so.
+#
+# Sized bands are taken first. A company the register places at 50-99
+# employees is an ICP candidate on the register's word; one whose
+# headcount was never recorded is a maybe, and a maybe waits behind a
+# yes when there is a queue.
+MAX_NEWCOMERS = 25
+
+
+def admit_newcomers(icos, icp, archive, run_id):
+    """Companies the register moved that the brief wants and we do not have.
+
+    THE ONLY AFFORDABLE DOOR FOR THE UNSIZED TIER. 67 129 live companies
+    in the ICP's own industries carry no headcount in the register at
+    all (res_bulk.ICP_KATPO_UNKNOWN). Enriching them all to find out
+    whether anything ever happens to them is about nineteen hours of
+    ARES for a population that is mostly micro or dormant. Coming at it
+    from the event end costs one pass over the bulk file: of the few
+    thousand companies that changed nationally this week, ask which ones
+    the brief would have wanted, and enrich only those.
+
+    This is the mechanism CLAUDE.md section 5 describes and the pipeline
+    never had - "the event finds the company, not the other way round",
+    and its stated advantage is exactly this one: it finds companies the
+    base does not contain yet.
+    """
+    from pipeline.sources import ares
+    from pipeline.sources.res_bulk import ICP_KATPO, lookup
+
+    admitted = lookup(icos, nace=icp.get("nace"), katpo=icp.get("katpo"),
+                      forma=icp.get("forma"))
+    # Sized bands first, then the unsized tier; stable by ICO inside
+    # each so a repeated run works through the same queue in the same
+    # order rather than sampling it differently every week.
+    queue = sorted(admitted.items(),
+                   key=lambda item: (item[1]["KATPO"] not in ICP_KATPO, item[0]))
+    taken = queue[:MAX_NEWCOMERS]
+
+    rows = []
+    for ico, _ in taken:
+        try:
+            rows.append(ares.get_company(ico, archive=archive, run_id=run_id))
+        except Exception as error:
+            print(f"  newcomer {ico}: {type(error).__name__}", file=sys.stderr)
+
+    if rows:
+        with open(CANDIDATES, "a", encoding="utf-8") as sink:
+            for row in rows:
+                sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(admitted), len(rows), len(queue) - len(taken)
+
+
+def stage_refresh(archive, run_id, days, icp=None):
     """Bring the volatile sources up to date. Registry: only what moved."""
     from pipeline.sources import ares, ares_notifications, dotace_eu, mpsv
 
-    icos, meta = ares_notifications.to_refresh(days=days)
-    print(f"  registry: {meta['changes']} changed nationally, {len(icos)} of ours",
-          file=sys.stderr)
+    icos, newcomers, meta = ares_notifications.to_consider(days=days)
+    print(f"  registry: {meta['changes']} changed nationally, {len(icos)} of ours, "
+          f"{len(newcomers)} not in the base", file=sys.stderr)
     if meta["history_too_short"]:
         print("  WARNING: window exceeds ARES's retained batches - "
               "registry events before "
               f"{meta['covered_from']} are not covered. Run ares.py --all.", file=sys.stderr)
 
+    updated, failed = {}, 0
     for ico in icos:
-        ares.get_company(ico, archive=archive)
-    print(f"  registry: {len(icos)} companies re-fetched", file=sys.stderr)
+        try:
+            updated[ico] = ares.get_company(ico, archive=archive, run_id=run_id)
+        except Exception as error:
+            # One unreachable company must not cost the other 29 their
+            # refresh - and its old row stays in the file untouched,
+            # which is a stale answer rather than no answer.
+            failed += 1
+            print(f"  registry: {ico} not refreshed ({type(error).__name__})", file=sys.stderr)
 
-    mpsv.refresh(archive=archive)
-    dotace_eu.refresh(archive=archive)
-    return {"registry_refreshed": len(icos), "registry_meta": meta}
+    replaced = save_candidates(updated)
+    print(f"  registry: {len(updated)} companies re-fetched, {replaced} rows updated"
+          + (f", {failed} failed" if failed else ""), file=sys.stderr)
+
+    matched = added = deferred = 0
+    if icp and newcomers:
+        matched, added, deferred = admit_newcomers(newcomers, icp, archive, run_id)
+        print(f"  registry: {matched} of {len(newcomers)} newcomers match the brief, "
+              f"{added} added to the base"
+              + (f", {deferred} queued for a later run" if deferred else ""),
+              file=sys.stderr)
+
+    # One unreachable source must not end the run. Found the hard way:
+    # the machine lost its network mid-run, mpsv.refresh() raised
+    # getaddrinfo, and a run that had already re-fetched 27 companies
+    # and matched 317 newcomers died on the stack trace instead of
+    # gating anything. Every source here is a weekly snapshot the run
+    # can survive without - it is a week staler, which is a worse run,
+    # not a failed one - so the failure is named and the stage
+    # continues.
+    sources = {}
+    for name, refresh_source in (("mpsv", mpsv.refresh), ("dotace_eu", dotace_eu.refresh)):
+        try:
+            refresh_source(archive=archive)
+            sources[name] = "ok"
+        except Exception as error:
+            sources[name] = f"{type(error).__name__}"
+            print(f"  {name}: refresh failed ({type(error).__name__}) - "
+                  f"the run continues on the copy already on disk", file=sys.stderr)
+
+    return {"sources": sources,
+            "registry_refreshed": replaced, "registry_failed": failed,
+            "newcomers_matched": matched, "newcomers_added": added,
+            "newcomers_deferred": deferred, "registry_meta": meta}
 
 
-def stage_gate(window_days, archive=None, run_id=None):
-    """NOW: who has a dated reason this week. Everything else stops here.
+def stage_gate(window_days, icp, archive=None, run_id=None):
+    """Three cuts, cheapest first: the brief, the negative filters, NOW.
 
-    The negative filter runs here, before the gate rather than after it,
-    for the reason the plan gives: throw work away while it is still
-    cheap. A company in insolvency matches every line of the ICP and
-    cannot buy anything, and letting it through would spend a site crawl
-    and an LLM pass to produce a card nobody can act on.
+    THE BRIEF COMES FIRST AND USED NOT TO COME AT ALL. The candidate file
+    was built once with the built-in NACE and size sets, so a run gated
+    every company in it regardless of what the salesperson had saved -
+    the brief was archived on the run row and never applied to anything
+    (filters/brief.py has the full account). Applying it here, over a
+    file already on disk, costs one pass and no request.
+
+    The negative filter stays where it was, before the gate rather than
+    after it, for the reason the plan gives: throw work away while it is
+    still cheap. A company in insolvency matches every line of the ICP
+    and cannot buy anything, and letting it through would spend a site
+    crawl and an LLM pass to produce a card nobody can act on.
     """
-    from pipeline.filters.negative import EXCLUDE, verdict
+    from pipeline.filters.brief import describe
+    from pipeline.scoring.select import eligible
     from pipeline.signals.now import (find, load_companies, load_history,
                                       load_tenders, record)
     from pipeline.sources.dotace_eu import load as load_subsidies
 
     companies = list(load_companies(CANDIDATES))
+    pool, funnel = eligible(companies, icp)
     history, subsidies = load_history(), load_subsidies()
     tenders = load_tenders()
 
-    qualified, excluded = {}, 0
-    for company in companies:
-        if verdict(company) == EXCLUDE:
-            excluded += 1
-            continue
+    print(f"  brief: {describe(icp)}", file=sys.stderr)
+    print(f"  {funnel['total']} candidates -> {funnel['pool']} after the brief "
+          f"and the negative filters", file=sys.stderr)
+    # Every reason printed, not just the total: a brief that drops 3200
+    # of 3299 has to say whether that was the size band or a region
+    # nobody meant to tick.
+    for reason, count in sorted(funnel["brief_rejected"].items(), key=lambda i: -i[1]):
+        print(f"    {count:5}  {reason}", file=sys.stderr)
+    if funnel["excluded"]:
+        print(f"    {funnel['excluded']:5}  negative (insolvency, liquidation)",
+              file=sys.stderr)
+
+    qualified = {}
+    for company in pool:
         events = find(company, history, window_days,
                       subsidies=subsidies, tenders=tenders)
         if events:
             qualified[company["ico"]] = events
 
-    print(f"  {excluded} excluded by negative filters "
-          f"(insolvency, liquidation)", file=sys.stderr)
-    print(f"  {len(qualified)} of {len(companies)} companies have a dated event",
+    print(f"  {len(qualified)} of {funnel['pool']} companies have a dated event",
           file=sys.stderr)
 
     # Record what the gate found, for the companies it let through only.
@@ -358,7 +532,7 @@ def stage_gate(window_days, archive=None, run_id=None):
     # rather than in a stage of its own keeps the claim and the decision
     # it justified in the same place.
     if archive is not None:
-        by_ico = {c["ico"]: c for c in companies}
+        by_ico = {c["ico"]: c for c in pool}
         states = {"fact": 0, "inference": 0, "discard": 0}
         orphaned = 0
         for ico in qualified:
@@ -384,11 +558,38 @@ def stage_enrich(archive, run_id, icos):
     """
     from pipeline.scoring.select import load_jsonl
     from pipeline.sources import certificates
-    from pipeline.sources.website import Fetcher, harvest, keep
+    from pipeline.sources.website import Fetcher, harvest, keep, resolve
 
     status = load_jsonl(WEBSITES)
     fetcher = Fetcher()
-    refreshed = 0
+    refreshed = resolved = 0
+
+    # A company the base gained after the last full domain sweep has no
+    # row in websites.jsonl at all, and every later stage reads that file
+    # to decide whether it may quote the site. Left alone, the newest
+    # candidates - the ones the change stream just brought in - would be
+    # exactly the ones arriving with the thinnest cards. Resolving here
+    # costs a handful of DNS lookups per company and only for the few
+    # the gate let through.
+    from pipeline.signals.now import load_companies
+    known = {c["ico"]: c for c in load_companies(CANDIDATES)}
+    for ico in icos:
+        if ico in status:
+            continue
+        company = known.get(ico) or {}
+        try:
+            found = resolve(ico, company.get("name") or "", company.get("city"),
+                            fetcher=fetcher, archive=archive, run_id=run_id)
+        except Exception as error:
+            print(f"  {ico}: resolve failed, {type(error).__name__}", file=sys.stderr)
+            continue
+        status[ico] = found
+        resolved += 1
+        with open(WEBSITES, "a", encoding="utf-8") as sink:
+            sink.write(json.dumps(found, ensure_ascii=False) + "\n")
+    if resolved:
+        print(f"  {resolved} domains resolved for companies new to the base",
+              file=sys.stderr)
 
     for ico in icos:
         site = status.get(ico) or {}
@@ -408,12 +609,40 @@ def stage_enrich(archive, run_id, icos):
 
     print(f"  {refreshed} of {len(icos)} re-crawled (rest have no proven domain)",
           file=sys.stderr)
-    return {"recrawled": refreshed}
+
+    # Contacts off the pages just harvested, for companies the contact
+    # sweep has never seen. Without this a company that entered the base
+    # this week reaches the card with its directors named from the
+    # register and no channel to any of them - the register knows who may
+    # sign, only the site knows how to reach them.
+    from pipeline.sources.contacts import get_contacts
+    from pipeline.scoring.select import CONTACTS as CONTACTS_FILE
+    have = load_jsonl(CONTACTS_FILE)
+    added = 0
+    for ico in icos:
+        site = status.get(ico) or {}
+        # Proven domains only. A guessed one belongs to a different
+        # company 46 % of the time, and a contact read off it would be a
+        # stranger's - see select.undeliverable().
+        if ico in have or site.get("status") != "proven":
+            continue
+        try:
+            row = get_contacts(ico, site, known.get(ico) or {}, fetcher, archive)
+        except Exception as error:
+            print(f"  {ico}: contacts failed, {type(error).__name__}", file=sys.stderr)
+            continue
+        with open(CONTACTS_FILE, "a", encoding="utf-8") as sink:
+            sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+        added += 1
+    if added:
+        print(f"  contacts read for {added} companies new to the base", file=sys.stderr)
+
+    return {"recrawled": refreshed, "domains_resolved": resolved, "contacts_added": added}
 
 
 def stage_agents(icos):
     """The LLM pass, only over the gated companies."""
-    from pipeline.llm.prompts import pain, production_mode, turnover_web
+    from pipeline.llm.prompts import pain, production_mode, relevance, turnover_web
 
     summary = {}
     for name, module in (("production_mode", production_mode), ("pain", pain)):
@@ -423,6 +652,17 @@ def stage_agents(icos):
             print(f"  {name}: {type(error).__name__} {error}", file=sys.stderr)
             summary[name] = None
 
+    # Strictly after pain: the judge reads the claims that agent just
+    # wrote. It can only mark a verified claim as beside the point, never
+    # create one, so a failure here leaves the run with unjudged
+    # evidence - which is the state every run before it was in, not a
+    # broken one.
+    try:
+        summary["relevance"] = len(relevance.run(list(icos)) or [])
+    except Exception as error:
+        print(f"  relevance: {type(error).__name__} {error}", file=sys.stderr)
+        summary["relevance"] = None
+
     try:
         summary["turnover_web"] = len(turnover_web.run(icos=set(icos)) or [])
     except Exception as error:
@@ -431,7 +671,8 @@ def stage_agents(icos):
     return summary
 
 
-def stage_cards(archive, run_id, ranked, top, fetch_turnover=True):
+def stage_cards(archive, run_id, ranked, top, fetch_turnover=True, icp=None,
+                qualified_count=None):
     """Render the week's dossiers and record what was handed over."""
     from pipeline.scoring.card import build, load_turnover_cache, render
     from pipeline.signals.now import load_tenders
@@ -448,8 +689,14 @@ def stage_cards(archive, run_id, ranked, top, fetch_turnover=True):
     cards = []
     for row in ranked[:top]:
         card = build(row["ico"], archive, companies, websites, contacts,
-                     turnover_cache, fetch_turnover, tenders)
+                     turnover_cache, fetch_turnover, tenders, icp)
         card["pain_score"] = row["pain_score"]
+        # Why this company sits where it sits. Carried from the ranking
+        # rather than recomputed, so the card cannot describe a different
+        # ordering from the one that actually chose it.
+        card["reason"] = row["reason"]
+        card["rank"] = ranked.index(row) + 1
+        card["of_qualified"] = qualified_count if qualified_count is not None else len(ranked)
         cards.append(card)
         print(render(card))
         print()
@@ -482,10 +729,10 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
     if "refresh" in stages:
         print("\n[refresh]", file=sys.stderr)
         report["stages"]["refresh"] = stage_refresh(
-            archive, run_id, refresh_days or window_days)
+            archive, run_id, refresh_days or window_days, icp)
 
     print("\n[gate]", file=sys.stderr)
-    qualified = stage_gate(window_days, archive, run_id)
+    qualified = stage_gate(window_days, icp, archive, run_id)
     report["stages"]["gate"] = len(qualified)
 
     if not qualified:
@@ -505,11 +752,15 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
 
     print("\n[select]", file=sys.stderr)
     from pipeline.scoring.select import run as select_run
-    _, ranked = select_run(window_days, top, archive=archive, qualified=qualified)
-    report["stages"]["select"] = len(ranked)
+    # Two lists on purpose: everyone who qualified, and the ones that can
+    # actually be handed over. A company with no way to reach anybody is
+    # not a dossier, so it stays in the ranking and out of the week.
+    deliverable, ranked = select_run(window_days, top, archive=archive,
+                                     qualified=qualified, icp=icp)
+    report["stages"]["select"] = {"qualified": len(ranked), "deliverable": len(deliverable)}
 
     print("\n[cards]", file=sys.stderr)
-    cards = stage_cards(archive, run_id, ranked, top, fetch_turnover)
+    cards = stage_cards(archive, run_id, deliverable, top, fetch_turnover, icp, len(ranked))
 
     # 22.3: fewer than five is an answer, not a shortfall to paper over.
     if len(cards) < top:

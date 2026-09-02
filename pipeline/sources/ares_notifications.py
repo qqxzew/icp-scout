@@ -197,6 +197,22 @@ def split(found, candidates):
     return {"refresh": refresh, "gone": gone, "new": new}
 
 
+def to_consider(days=7, source=DEFAULT_SOURCE, candidates_path=CANDIDATES, today=None):
+    """(ours to re-fetch, changed ICOs not ours yet, meta).
+
+    The second list is what split() calls `new` and used to only count.
+    It is the entry the base has for a company nobody has enriched -
+    above all the 67 129 whose headcount the register never recorded,
+    which are too many to crawl and are perfectly reachable this way.
+    The event finds the company (CLAUDE.md section 5); res_bulk.lookup()
+    then decides whether the brief wants it.
+    """
+    found, meta = changes(source, days, today)
+    groups = split(found, load_candidates(candidates_path))
+    meta.update({k: len(v) for k, v in groups.items()})
+    return sorted(groups["refresh"]), sorted(groups["new"]), meta
+
+
 def to_refresh(days=7, source=DEFAULT_SOURCE, candidates_path=CANDIDATES, today=None):
     """The short list a weekly run actually needs. (icos, meta).
 
