@@ -38,6 +38,48 @@ LEGAL_FORMS = {
     "121": "a.s.",
 }
 
+# NUTS3 regions. The interface saves a brief as region CODES (they come
+# from data/ui/regions.json, keyed by the RES district prefix), while
+# ARES reports a company's region as a NAME (sidlo.nazevKraje). Filtering
+# a candidate against a saved brief therefore needs one of the two
+# translated, and this is where the translation lives rather than in the
+# filter itself.
+#
+# Both sides were compared before writing this table down: the 14 names
+# ARES uses across the whole candidate list are character-for-character
+# the 14 names RUIAN returns for these codes, Prague included ("Hlavní
+# město Praha", which is a city and not a "kraj" in either source). Had
+# they differed anywhere, the filter would have needed folding rather
+# than a dictionary - so the exact-match assumption is recorded here as
+# a checked fact, not a hope.
+REGIONS = {
+    "CZ010": "Hlavní město Praha",
+    "CZ020": "Středočeský kraj",
+    "CZ031": "Jihočeský kraj",
+    "CZ032": "Plzeňský kraj",
+    "CZ041": "Karlovarský kraj",
+    "CZ042": "Ústecký kraj",
+    "CZ051": "Liberecký kraj",
+    "CZ052": "Královéhradecký kraj",
+    "CZ053": "Pardubický kraj",
+    "CZ063": "Kraj Vysočina",
+    "CZ064": "Jihomoravský kraj",
+    "CZ071": "Olomoucký kraj",
+    "CZ072": "Zlínský kraj",
+    "CZ080": "Moravskoslezský kraj",
+}
+
+
+def region_names(codes):
+    """NUTS3 codes -> the region names ARES uses. Unknown codes pass through.
+
+    An unrecognised code is kept as given instead of being dropped: a
+    brief that names a region this table does not know must not quietly
+    turn into "no region filter at all", which is how a narrowing
+    criterion becomes a widening one.
+    """
+    return {REGIONS.get(code, code) for code in codes or ()}
+
 
 def decode_employee_category(code):
     """Translate a CSU 579 code into a readable range.

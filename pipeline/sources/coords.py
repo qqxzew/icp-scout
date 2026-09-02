@@ -1,4 +1,38 @@
+import math
+
 import requests
+
+
+# Mean Earth radius in kilometres. The great-circle distance it produces
+# is a few tenths of a percent off the real driving distance, which is
+# irrelevant here: the number answers "is this a day trip from Plzen or
+# the other end of the country", not "how much fuel".
+EARTH_RADIUS_KM = 6371.0
+
+
+def distance_km(origin, point):
+    """Great-circle distance between two {"lat", "lon"} points, or None.
+
+    None when either point is missing a coordinate - and the caller has
+    to keep that apart from a large distance. A company whose address
+    RUIAN could not place is not far away; it is unplaced, and the two
+    must not be collapsed (hypothesis E of the brief).
+    """
+    if not origin or not point:
+        return None
+    try:
+        lat1, lon1 = float(origin["lat"]), float(origin["lon"])
+        lat2, lon2 = float(point["lat"]), float(point["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = (math.sin(delta_phi / 2) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2)
+    return round(2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a)), 1)
 
 
 def get_coordinates(kod_adresniho_mista):

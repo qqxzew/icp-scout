@@ -73,7 +73,7 @@ def unset(values):
 
 @app.get("/api/icp")
 def read_filters():
-	"""What the next run would use: the saved brief, or RTsoft's ICP.
+	"""What the next run would use: the saved brief, or ICP.
 
 	The interface opens on this instead of on an empty form. A blank
 	screen would be a lie about the prototype's state - the pipeline has
@@ -90,6 +90,34 @@ def read_filters():
 	return with_defaults(saved, fallback)
 
 
+def location_of(filters):
+	"""The saved geography, marked with whether anybody actually chose it.
+
+	filters/brief.py excludes on a radius a person typed and only orders
+	on the one that ships with RTsoft's ICP ("preferovaně", not "pouze").
+	The screen cannot tell the two apart by itself: it opens pre-filled
+	with the built-in 150 km around Plzeň, so a salesperson who edits the
+	industry list and saves would post that radius back as if it were
+	their own choice - and the brief's preference would silently become a
+	hard geographic cut.
+
+	So the comparison happens here: a location identical to the built-in
+	one is still the built-in one, whoever pressed save. The moment any
+	part of it differs, somebody decided, and it filters.
+	"""
+	chosen = {
+		"from": filters.from_,
+		"km": filters.km,
+		"origin": filters.origin.model_dump() if filters.origin else None,
+	}
+	built_in = default_icp().get("location") or {}
+	same = (chosen["km"] == built_in.get("km")
+	        and (chosen["origin"] or {}).get("name") == (built_in.get("origin") or {}).get("name"))
+	if same:
+		chosen["from_default"] = True
+	return chosen
+
+
 @app.post("/api/icp")
 def save_filters(filters: Filters):
 	document = {
@@ -103,11 +131,7 @@ def save_filters(filters: Filters):
 		# Recorded anyway so the saved brief equals what actually ran.
 		"forma": sorted(ICP_FORMA),
 		"regions": unset(filters.regions),
-		"location": {
-			"from": filters.from_,
-			"km": filters.km,
-			"origin": filters.origin.model_dump() if filters.origin else None,
-		},
+		"location": location_of(filters),
 	}
 
 	ICP_PATH.parent.mkdir(parents=True, exist_ok=True)
