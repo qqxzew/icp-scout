@@ -48,6 +48,23 @@ production_mode.py: website pages plus vacancy text, gpt-4.1-mini,
 every quote checked against the actual archived documents before it is
 allowed to become a fact.
 
+TWO THINGS A FINISHED RUN TAUGHT THIS AGENT.
+
+ABSENCE IS NOT A FINDING. Version 1 let the model report what it had
+failed to find - "na webu není zmínka o ručním převodu dat" - with no
+quote, which check() files as an inference. Four of the five inferences
+on that run's top card were of exactly that shape, printed under the
+company's pain evidence and adding to its score: the company ranked
+higher for every sign it turned out NOT to have. The prompt now forbids
+it and the loop below drops it anyway, counted, because "did the model
+listen" is not something to check by hand.
+
+ONE KIND PER SIGN. The claims were all stored as kind "pain", so the
+sign the model had already identified was thrown away at the moment of
+writing, and the card printed the word `pain` six times in a row. The
+kind is now `pain:<sign>` - the same shape production_mode.py has
+always used, and the reason a card can say "ruční přenos dat".
+
 Run:
     python -m pipeline.llm.prompts.pain --sample 15
 """
@@ -58,14 +75,30 @@ import sys
 from collections import Counter
 
 from pipeline.evidence.archive import Archive
-from pipeline.evidence.verify import check_many_against_any
+from pipeline.evidence.verify import check_against_any, is_absence_claim
 from pipeline.llm.client import LLM, usage_summary
 from pipeline.llm.prompts.production_mode import TRUSTED_SITE_STATUS, gather_documents, user_prompt
 from pipeline.scoring.select import WEBSITES, load_jsonl
 from pipeline.sources.mpsv import load as load_vacancies
 
 PROMPT_NAME = "pain"
-PROMPT_VERSION = 1
+# 2: the prompt stopped accepting statements about what the text does
+# NOT say. See the ABSENCE note below and evidence/verify.py.
+PROMPT_VERSION = 2
+
+# The three signs in one line each. SYSTEM below says the same things at
+# length, for the agent that has to find them; this dict is the compact
+# form the second-layer judge (llm/prompts/relevance.py) checks a
+# finding against, and the card reads its labels from. One list of
+# signs, three readers, so a sign cannot exist in one of them only.
+SIGNS = {
+    "scale": "vysoký počet jednotek, které je nutné rozvrhovat v čase - "
+             "strojů, směn, pracovišť, vozidel, čet, poboček, pozic na zakázku",
+    "manual_data": "ruční přenos výrobních dat: řetězec provoz -> papír/Excel/mistr "
+                   "-> člověk -> systém, tedy člověk uprostřed",
+    "tacit_knowledge": "klíčové know-how drží jeden člověk v hlavě - dlouhé zaškolení, "
+                       "ústní předávání znalostí, nově vzniklá role po jednom člověku",
+}
 
 SYSTEM = """Jsi analytik hledající v textu webu firmy a jejích \
 pracovních inzerátů stopy tří konkrétních věcí. Firma sama tyto věci \
@@ -97,13 +130,19 @@ Pravidla pro všechny tři kategorie:
 - Vrať POUZE nálezy, pro které máš oporu v textu - u firmy, kde nic \
   není, vrať prázdné pole findings. Prázdný výsledek je platná a časná \
   odpověď, ne selhání.
+- NIKDY nevracej nález o tom, co v textu NENÍ. Věty jako "na webu není \
+  zmínka o ručním přenosu dat" nebo "není explicitně uvedena závislost \
+  na jednom člověku" nejsou nálezy - je to prázdný výsledek napsaný \
+  slovy. Nepřítomnost signálu se hlásí prázdným polem findings.
+- Každý nález musí tvrdit něco o FIRMĚ, ne o textu, který čteš.
 - Každý nález nese DOSLOVNOU citaci v "quote". Citaci nikdy nezkracuj \
   třemi tečkami a nikdy nespojuj dvě nesousedící věty do jedné citace - \
   pokud chceš citovat dvě různé věty, vrať dva samostatné nálezy.
 - Pole "quote" obsahuje POUZE samotný text ze zdroje, BEZ uvozovek na \
   začátku a na konci - pole samo o sobě už je citace, uvozovky nepřidávej.
 - Pokud tvrzení je tvůj úsudek z kontextu (např. "firma pravděpodobně \
-  spoléhá na jednoho vedoucího"), nastav "quote" na null."""
+  spoléhá na jednoho vedoucího"), nastav "quote" na null. I úsudek ale \
+  musí něco tvrdit o firmě - ne o tom, co se v textu nepodařilo najít."""
 
 SCHEMA = {
     "type": "object",
@@ -152,23 +191,50 @@ def run(sample_size=None, icos=None):
         answer = llm.complete(PROMPT_NAME, PROMPT_VERSION, SYSTEM,
                               user_prompt(documents), SCHEMA)
 
-        verified, summary = check_many_against_any(
-            archive, ico, "pain", answer["findings"], snapshot_ids, run_id,
-        )
+        # The prompt asks for no absence statements; this makes sure of
+        # it. Same division of labour as everywhere else in the project:
+        # the prompt requests the behaviour, code enforces it, because
+        # "did the model listen" must not be something a human checks by
+        # hand. A dropped finding is counted, never silently swallowed.
+        findings, absences = [], 0
+        for item in answer["findings"]:
+            if is_absence_claim(item.get("value"), item.get("quote")):
+                absences += 1
+                continue
+            findings.append(item)
+
+        # One claim kind per sign, not a single "pain" bucket. The model
+        # already returns which of the three it found; storing that in
+        # the kind is what lets the card say "ruční přenos dat" instead
+        # of printing the word `pain` six times and leaving the
+        # salesperson to guess which of the five ICP signs fired.
+        verified, summary = [], {"fact": 0, "inference": 0, "discard": 0}
+        for item in findings:
+            result = check_against_any(archive, ico, f"pain:{item['sign']}",
+                                       item.get("value"), item.get("quote"),
+                                       snapshot_ids, run_id)
+            verified.append(result)
+            summary[result["state"]] += 1
 
         signs_confirmed = sorted({
-            item["sign"] for item, r in zip(answer["findings"], verified)
+            item["sign"] for item, r in zip(findings, verified)
             if r["state"] == "fact"
         })
         report.append({"ico": ico, "documents": len(documents),
-                       "signs": signs_confirmed, "evidence": summary})
-        print(f"  {ico}  docs={len(documents)}  signs={signs_confirmed}  {summary}",
+                       "signs": signs_confirmed, "evidence": summary,
+                       "absence_dropped": absences})
+        print(f"  {ico}  docs={len(documents)}  signs={signs_confirmed}  {summary}"
+              + (f"  absence dropped: {absences}" if absences else ""),
               file=sys.stderr)
 
     archive.finish_run(run_id)
 
     by_sign = Counter(s for row in report for s in row["signs"])
     print(f"\nsigns confirmed across {len(report)} companies: {dict(by_sign)}", file=sys.stderr)
+    dropped = sum(row["absence_dropped"] for row in report)
+    if dropped:
+        print(f"{dropped} findings dropped as statements about missing evidence",
+              file=sys.stderr)
 
     ev_totals = Counter()
     for row in report:

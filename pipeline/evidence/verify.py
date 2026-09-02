@@ -15,6 +15,19 @@ and no branch where "the model sounded confident" counts for anything.
 The only way a statement reaches the salesperson labelled a fact is a
 successful substring search.
 
+WHAT THIS CANNOT DO, AND WHAT WAS ADDED BESIDE IT. Containment proves
+that a sentence is on the page; it says nothing about whether the
+sentence answers the question that was asked, and a run put "Jednosměnný
+provoz" on a card as proof of a pain sign for exactly that reason. Two
+guards sit next to the three branches, further down this file, and
+neither of them touches the fact/inference/discard decision above:
+states_absence() refuses to count a quoteless "there is no mention of X"
+as evidence of X, and unrelated() reads the verdict of the second-layer
+judge in llm/prompts/relevance.py. The judge may only subtract - it can
+mark a verified fact as beside the point, never turn anything into a
+fact - so the rule that only string containment produces a fact still
+holds.
+
 Why exact containment and not fuzzy matching: a looser comparison would
 have to be tuned, and there is no ground truth to tune it against yet.
 Exact matching after normalisation is the only version of this that
@@ -50,7 +63,7 @@ Run:
 import argparse
 import re
 
-from pipeline.evidence.archive import Archive, normalize
+from pipeline.evidence.archive import Archive, UNRELATED, normalize
 
 # Characters the model uses to typographically mark its own citation -
 # straight, Czech-style „low" / "high", and curly single/double. Checked
@@ -139,6 +152,131 @@ def find_quote(quote, snapshot_text):
 def quote_found(quote, snapshot_text):
     """Whether `quote` appears verbatim in `snapshot_text` (see find_quote)."""
     return find_quote(quote, snapshot_text) is not None
+
+
+# ---------------------------------------------------------------------------
+# Statements that assert nothing
+# ---------------------------------------------------------------------------
+#
+# A model asked to find pain signs answers, quite reasonably, when it
+# finds none - "na webu není zmínka o ručním převodu dat". That sentence
+# has no quote, so check() files it as an inference, the card prints it
+# under the company's pain evidence, and select.py scores it. Measured on
+# the last full run: four of the five inferences on the top card were
+# statements that the pain is NOT there, and the company was ranked
+# higher for each of them. Absence of a signal became evidence of one.
+#
+# The shape they share is that they are about the DOCUMENT, not about the
+# company: a negation followed by a word for mentioning or stating. Real
+# pain phrased negatively - "plánování není nikde zdokumentováno",
+# "výroba není řízena systémem" - is about the company and does not
+# match, which is the distinction this pattern is built on.
+_ABSENCE_NEGATION = (r"(?:není|nejsou|nebyl\w*|chybí|nelze|nemá|nemáme|"
+                     r"nenalez\w*|neuvád\w*|nezmiňuj\w*|neobsahuj\w*)")
+_ABSENCE_OBJECT = (r"(?:uveden\w*|zmín\w*|zmiňuj\w*|explicit\w*|doložen\w*|doklad\w*|"
+                   r"informac\w*|údaj\w*|patrn\w*|dostupn\w*|nalezen\w*|k dispozici)")
+_ABSENCE = re.compile(rf"(?i)\b{_ABSENCE_NEGATION}\b(?:\W+\w+){{0,4}}?\W+{_ABSENCE_OBJECT}")
+# Verbs that already carry the whole statement - "text neuvádí", "inzerát
+# nezmiňuje" - and need no object to be an assertion about the source.
+_ABSENCE_VERB = re.compile(r"(?i)\b(?:nezmiňuj\w*|neuvád\w*|neobsahuj\w*|nenalez\w*)\b")
+
+
+def states_absence(value):
+    """Whether a statement says the evidence is missing rather than what it is."""
+    text = value or ""
+    return bool(_ABSENCE.search(text) or _ABSENCE_VERB.search(text))
+
+
+def is_absence_claim(value, quote):
+    """A quoteless statement that the evidence is not there - never evidence.
+
+    Both halves matter. Without a quote nothing was read, so the sentence
+    can only be the model reporting what it failed to find. WITH a quote
+    the same wording is a fact about a real sentence on a real page, and
+    the pattern above is deliberately not trusted enough to overrule
+    that: "není k dispozici žádný plánovací systém", printed on a
+    company's own site, is a pain sign of the first order.
+    """
+    return not quote and states_absence(value)
+
+
+# ---------------------------------------------------------------------------
+# Relevance: verified, and still beside the point
+# ---------------------------------------------------------------------------
+#
+# find_quote() proves that a sentence is on the page. It cannot prove
+# that the sentence has anything to do with what was asked - "Jednosměnný
+# provoz" and "výrobní haly o ploše 8.906 m2" both reached a card as
+# proof of the ICP's first pain sign, both genuinely quoted, neither
+# about a number of units to schedule. llm/prompts/relevance.py is the
+# second layer that judges that; archive.py owns the two words it may
+# write onto a claim. Only UNRELATED changes anything - a claim nobody
+# judged keeps counting, because an unasked question is not a no.
+
+
+def unrelated(claim_row):
+    """Whether the relevance judge rejected this claim as beside the point."""
+    keys = claim_row.keys() if hasattr(claim_row, "keys") else ()
+    return "relevance" in keys and claim_row["relevance"] == UNRELATED
+
+
+def counts_as_evidence(claim_row):
+    """Whether a stored claim may be shown on a card and scored.
+
+    One predicate for both readers - scoring/select.py and
+    scoring/card.py - so a claim can never be scored in one place and
+    hidden in the other.
+    """
+    return not unrelated(claim_row) and not is_absence_claim(claim_row["value"],
+                                                             claim_row["quote"])
+
+
+def usable(rows):
+    """Out of one company's claims, the ones that may be shown and scored.
+
+    Everything counts_as_evidence() rejects, plus one thing only
+    visible with the whole list in hand: a statement stored twice by two
+    versions of the same agent. pain.py used to file every finding under
+    the flat kind `pain` and now files it under `pain:<sign>`, so an
+    archive written across that change holds both rows - the same
+    quote twice, one of them carrying which sign it is.
+    The specific one wins and the flat one is dropped rather than
+    deleted from the archive: it was really produced and the record of
+    what this pipeline did stays intact, it just stops being printed
+    twice on the same card.
+
+    Written generally rather than as a `pain` special case because the
+    same thing will happen to the next agent whose kinds get split.
+
+    Matched on the QUOTE, not on the wording of the statement. The two
+    versions of the agent summarise the same sentence differently -
+    "firma má výrobní haly o ploše 8.906 m2" and "výrobní plocha 8.906
+    m2 ve dvou halách" - so comparing statements finds no duplicate at
+    all. The quote is the evidence and it is identical by construction:
+    both were verified against the same archived page.
+    """
+    def family(row):
+        return row["kind"].split(":", 1)[0]
+
+    specific_quotes = {(family(row), row["quote"]) for row in rows
+                       if ":" in row["kind"] and row["quote"]}
+    # Claims with no quote are inferences, and two inferences with the
+    # same family are not the same statement - those still have to match
+    # on the text itself.
+    specific_values = {(family(row), row["value"]) for row in rows
+                       if ":" in row["kind"] and not row["quote"]}
+
+    kept = []
+    for row in rows:
+        if not counts_as_evidence(row):
+            continue
+        if ":" not in row["kind"]:
+            if row["quote"] and (row["kind"], row["quote"]) in specific_quotes:
+                continue
+            if not row["quote"] and (row["kind"], row["value"]) in specific_values:
+                continue
+        kept.append(row)
+    return kept
 
 
 def check(archive, ico, kind, value, quote, snapshot_id, run_id=None):
