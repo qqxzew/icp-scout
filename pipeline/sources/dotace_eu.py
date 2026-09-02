@@ -160,13 +160,19 @@ PROJECT_KINDS = (
     # projects this reorder moves come from energy and training, both
     # non-signal, so nothing else about selection changes.
     ("research", (r"vyzkum", r"\bvyvoj", r"\bvav\b", r"inovac", r"prototyp")),
+    # Genuinely unrelated to how the company plans its work. Checked
+    # BEFORE capacity for the same reason research is: the wording
+    # overlaps and the meaning does not. "Porizeni energeticky
+    # uspornejsich technologii a FV systemu" matches `porizeni.*technologi`
+    # and was filed as capacity - a company acquiring units to schedule -
+    # when what it acquires is solar panels. That one project put PINIE
+    # Lubna at the top of a week.
+    ("energy", (r"energetick", r"uspor", r"fotovoltai", r"tepeln", r"emis")),
     # Growing capacity - more units to schedule, which is ICP sign 1.
     ("capacity", (
         r"rozsireni.*kapacit", r"porizeni.*technologi", r"nova.*hala",
         r"vyrobni linka",
     )),
-    # Genuinely unrelated to how the company plans its work.
-    ("energy", (r"energetick", r"uspor", r"fotovoltai", r"tepeln", r"emis")),
     ("training", (r"vzdelavan", r"skoleni", r"kompetenc")),
     ("marketing", (r"veletr", r"vystav", r"zahranicn", r"export", r"marketing")),
 )
@@ -177,21 +183,44 @@ PROJECT_KINDS = (
 SIGNAL_KINDS = {"production_digitalisation", "capacity"}
 
 
-def classify_project(name):
+def fold(text):
+    """Lowercase and without diacritics - the form every pattern is written in."""
+    import unicodedata
+    plain = (text or "").replace("\xa0", " ")
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", plain)
+        if unicodedata.category(ch) != "Mn"
+    ).lower()
+
+
+def classify_project(name, description=None):
     """What the money is for. First match wins, order is deliberate.
 
     `already_buying` is checked before everything else so that a project
     that names an ERP can never be mistaken for generic digitalisation -
     the two look alike in wording and mean opposite things for us.
+
+    AND IT IS THE ONLY KIND ALSO SEARCHED IN THE DESCRIPTION. The
+    project name is a title written for a grant committee; the
+    description is where the company says what it will actually buy.
+    OK Zachlumi's project is called "Digitalizace vyrobnich a ridicich
+    procesu", which reads as a company digitalising its shop floor, and
+    its description says "bude porizen celistvy informacni system se
+    vsemi funkcionalitami". The name made it one of the best leads of
+    the week; the description says somebody has already sold them the
+    thing we sell. Found by opening five cards and reading them.
+
+    Only these patterns are searched there, deliberately. A description
+    is long and full of incidental words - "skoleni pracovniku" turns up
+    in half of them - so matching every kind against it would reclassify
+    projects on a passing mention. What the description is trusted for
+    is the one thing it states outright: the system being bought.
     """
-    import unicodedata
-    plain = (name or "").replace("\xa0", " ")
-    folded = "".join(
-        ch for ch in unicodedata.normalize("NFD", plain)
-        if unicodedata.category(ch) != "Mn"
-    ).lower()
+    folded = fold(name)
+    described = fold(description) if description else ""
     for kind, patterns in PROJECT_KINDS:
-        if any(re.search(pattern, folded) for pattern in patterns):
+        haystack = f"{folded} {described}" if kind == "already_buying" else folded
+        if any(re.search(pattern, haystack) for pattern in patterns):
             return kind
     return "other"
 
@@ -451,7 +480,7 @@ def funding_events(ico, subsidies, window_days, today=None):
         age = (today - signed).days
         if age < 0 or age > window_days:
             continue
-        purpose = classify_project(project["project"])
+        purpose = classify_project(project["project"], project.get("description"))
         events.append({
             "kind": "subsidy_signed",
             "purpose": purpose,
