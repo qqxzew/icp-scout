@@ -42,9 +42,38 @@ URL = "https://opendata.csu.gov.cz/soubory/od/od_org03/res_data.csv"
 # and the size drifts.
 MIN_BYTES = 400_000_000
 
-# CSU 579 codes covering the ICP size range (50-199 employees).
-# 220/230 are the lower boundary the ICP still accepts (from 20 people).
-ICP_KATPO = ("240", "310")
+# CSU 579 codes covering the ICP size range. The profile writes it as
+# "(20) 50-200": unbracketed is the target band, the bracket is the
+# lower boundary it still accepts. So all four are candidates, and 240
+# and 310 are simply the strongest of them.
+#
+#   220  20-24     230  25-49     240  50-99     310  100-199
+#
+# Measured over the live register, in this module's own NACE set:
+# 240+310 = 3 299 companies, 220+230 = 6 494 more. Keeping only the two
+# target bands was throwing away two thirds of the field the ICP
+# explicitly says it accepts.
+ICP_KATPO = ("220", "230", "240", "310")
+
+# Size not recorded. A separate constant, never merged into the one
+# above, and the distinction is the point.
+#
+# 67 129 live s.r.o./a.s. in these NACE divisions carry KATPO 000, which
+# is 48 % of the field - and a filter written as `KATPO in (240, 310)`
+# reads every one of them as the wrong size. That is the mistake this
+# project keeps arguing against: absence of data is not a negative
+# answer (hypothesis E). Checked before writing this: 15 of 15 sampled
+# 000 companies come back "Neuvedeno" from ARES too, so no free
+# register can size them - the state is permanent, not a gap to fill.
+#
+# They are admitted by the brief and shown as their own tier. What they
+# are NOT is bulk-enriched: 67 129 companies would be ~19 hours of ARES
+# and, by sampling, are mostly micro or dormant entities (9 % are
+# explicitly "v likvidaci", 45 % were founded after 2020). They enter
+# through the change notifications instead - the event finds the
+# company, per CLAUDE.md section 5 - which costs a few dozen lookups a
+# week rather than a day of crawling.
+ICP_KATPO_UNKNOWN = ("000",)
 
 # Legal forms the pipeline sells to. Everything else - state-funded
 # organisations, sole traders, associations - is dropped: a school or a
@@ -197,6 +226,41 @@ def select(path=DEFAULT_PATH, **criteria):
     for row in iter_rows(path):
         if matches(row, **criteria):
             yield row
+
+
+def lookup(icos, path=DEFAULT_PATH, **criteria):
+    """{ico: row} for the given ICOs that also satisfy the criteria.
+
+    The register read the other way round: not "who matches the ICP" but
+    "of these particular companies, which ones do". That is what the
+    change stream needs. ares_notifications.py hands back a few thousand
+    ICOs that moved this week and are not in our base, and its own
+    docstring says they are "useless until res_bulk.py's ICP filter has
+    looked at them" - this is the function that looks.
+
+    One streaming pass over the 517 MB export, about a minute, and it is
+    the only affordable way to size a company the register never sized:
+    the unsized tier is 67 129 companies, so asking the register about
+    the few thousand that actually moved is three orders of magnitude
+    cheaper than enriching all of them and waiting for something to
+    happen.
+    """
+    wanted = {str(ico).zfill(8) for ico in icos}
+    if not wanted:
+        return {}
+
+    criteria.setdefault("nace", ICP_NACE)
+    criteria.setdefault("katpo", ICP_KATPO + ICP_KATPO_UNKNOWN)
+    criteria.setdefault("forma", ICP_FORMA)
+
+    found = {}
+    for row in iter_rows(path):
+        ico = row["ICO"].zfill(8)
+        if ico in wanted and matches(row, **criteria):
+            found[ico] = row
+            if len(found) == len(wanted):    # nothing left to look for
+                break
+    return found
 
 
 def summarise(row):

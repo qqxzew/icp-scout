@@ -623,7 +623,7 @@ function renderSizes() {
     <div class="row" data-size="${band.code}">
       <span class="box" data-state="${draft.sizes.has(band.code) ? "on" : "off"}">${CHECK}</span>
       <span class="row-label">
-        <span class="row-name">${band.label} zaměstnanců</span>
+        <span class="row-name">${band.label}</span>
       </span>
       <span class="row-count">${nf.format(band.count)}</span>
     </div>`).join("");

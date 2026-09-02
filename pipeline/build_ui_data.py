@@ -50,10 +50,24 @@ OBEC_LAYER = (12, "kod,nazev,okres,nutslau")
 CITY_DISTRICT_LAYER = (8, "kod,nazev,obec")
 REGION_LAYER = 17
 
-# Bands worth offering in the filter. "Neuvedeno" is not a size, and a
-# company of 1000+ is a corporation with its own IT department - neither
-# is a lead, and both would only pad the list.
-USEFUL_SIZES = ("120", "130", "210", "220", "230", "240", "310", "320", "330", "340")
+# Bands worth offering in the filter. A company of 1000+ is a
+# corporation with its own IT department and would only pad the list.
+#
+# 000 IS OFFERED, AND IT USED TO SAY HERE THAT IT IS "NOT A SIZE". It is
+# not a size, but leaving it out of the screen did not make those
+# companies not exist - it made them invisible while the filter silently
+# read them as the wrong size. In the ICP's own NACE divisions they are
+# 67 129 live companies, 48 % of the field. Now they are a tier a person
+# can tick or untick, which is the only honest place for that decision:
+# see res_bulk.ICP_KATPO_UNKNOWN for what the pipeline then does with
+# them, and what it deliberately does not.
+USEFUL_SIZES = ("000", "120", "130", "210", "220", "230", "240", "310", "320", "330", "340")
+
+# What each band is called on screen. Built here rather than in the page
+# because "Neuvedeno" does not take the same sentence as "50-99": the
+# interface used to append " zaměstnanců" to every label, which reads
+# fine for a range and not at all for an absence.
+SIZE_LABELS = {"000": "Velikost neuvedena v registru"}
 
 
 def load_nace_names():
@@ -188,7 +202,8 @@ def write_sizes(size_counts):
     bands = [
         {
             "code": code,
-            "label": EMPLOYEE_CATEGORIES[code].replace(" employees", ""),
+            "label": SIZE_LABELS.get(
+                code, EMPLOYEE_CATEGORIES[code].replace("employees", "zaměstnanců")),
             "count": size_counts.get(code, 0),
         }
         for code in USEFUL_SIZES
