@@ -42,6 +42,9 @@ from pathlib import Path
 
 ARES_CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
 MPSV_HISTORY = Path("data/raw/mpsv_history.jsonl")
+# The daily export as it stands today - see load_history() for why the
+# archive of increments is not enough on its own.
+MPSV_CURRENT = Path("data/raw/mpsv_vacancies.jsonl")
 ARES_BASE = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest"
 
 # The archive's earliest day (docs/reseni-log.md 16.2, 18.7) - a vacancy
@@ -150,24 +153,74 @@ def registry_events(company, window_days, today=None):
 # ---------------------------------------------------------------------------
 
 
-def load_history(path=MPSV_HISTORY):
-    """ICO -> [(date, isco4, title)], the dated vacancy record.
+def isco4(value):
+    """The four-digit ISCO group, whichever way MPSV wrote it.
 
-    Loaded whole rather than filtered on read: it is 25 740 rows, small
-    enough that re-reading it per company would be the slower design for
-    no benefit.
+    The daily export says "CzIsco/93291" and the increment archive says
+    "93291". Same code, two spellings, and comparing the prefixed form
+    against MANAGEMENT_ISCO silently matched nothing at all - which is
+    not an error, just a signal that quietly produces zero.
     """
-    index = {}
-    if not Path(path).exists():
-        return index
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            row = json.loads(line)
-            event_date = parse_date(row.get("date"), earliest=HISTORY_START)
-            isco = (row.get("isco") or "")[:4]
-            if not event_date or not isco:
-                continue
-            index.setdefault(row["ico"], []).append((event_date, isco, row.get("title")))
+    return str(value or "").rsplit("/", 1)[-1][:4]
+
+
+def load_history(path=MPSV_HISTORY, current=MPSV_CURRENT):
+    """ICO -> [(date, isco4, title)], the dated vacancy record. Two sources.
+
+    THE ARCHIVE OF INCREMENTS IS NOT BEING WRITTEN. mpsv_history.jsonl
+    was meant to accumulate as vacancies appear and disappear, and
+    run.py's preflight still says it "accumulates from repeated
+    --refresh calls" - but mpsv.refresh() writes only the current
+    snapshot, and nothing in the pipeline appends to the history. It has
+    therefore been frozen since the day it was last built by hand. On a
+    run made 01.09 its newest row was 21.08, i.e. eleven days old
+    against a seven-day window: the growth signal could not fire, and
+    the reason had nothing to do with whether anybody was hiring.
+
+    So the current export is read too. Every open vacancy carries
+    MPSV's own `datumVlozeni`, which is exactly the dated event this
+    module is looking for, and it needs no archive to be trustworthy -
+    the register states when the advert was posted.
+
+    What the archive still covers, and why it is not simply dropped: a
+    vacancy posted AND withdrawn inside the window is gone from the
+    export and only the increment record would hold it. Both are read
+    and merged; a posting present in both is one event, not two.
+
+    No `earliest` bound on the export's dates, unlike the archive's. The
+    HISTORY_START guard exists because an increment row is dated by when
+    WE saw it, so nothing before we started watching means anything. A
+    posting date from MPSV is the register's own fact about the advert,
+    true whenever it was made - and role_history_depth() gets a more
+    honest measure of how long a company has been visible because of it.
+    """
+    index, seen = {}, set()
+
+    def remember(ico, event_date, isco, title):
+        if not ico or not event_date or not isco:
+            return
+        # Same company, same day, same role group is one posting however
+        # many sources mention it.
+        key = (ico, event_date, isco)
+        if key in seen:
+            return
+        seen.add(key)
+        index.setdefault(ico, []).append((event_date, isco, title))
+
+    if Path(path).exists():
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                remember(row.get("ico"),
+                         parse_date(row.get("date"), earliest=HISTORY_START),
+                         isco4(row.get("isco")), row.get("title"))
+
+    if Path(current).exists():
+        with open(current, encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                remember(row.get("ico"), parse_date(row.get("posted")),
+                         isco4(row.get("isco")), row.get("title"))
     return index
 
 
@@ -273,9 +326,16 @@ def load_tenders(path=TENDERS):
         return out
     with open(path, encoding="utf-8") as handle:
         for line in handle:
-            if line.strip():
+            if not line.strip():
+                continue
+            try:
                 row = json.loads(line)
-                out.setdefault(row["ico"], []).append(row)
+            except json.JSONDecodeError:
+                # The sweep that writes this file takes hours and a run
+                # may read it while it is still going - see
+                # load_companies() for the same reasoning.
+                continue
+            out.setdefault(row["ico"], []).append(row)
     return out
 
 
@@ -610,9 +670,24 @@ def record(archive, company, history, window_days=30, run_id=None, today=None,
 
 
 def load_companies(path=ARES_CANDIDATES):
+    """Stream the candidate file, tolerating a line still being written.
+
+    The file is appended to while a run is in progress - the change
+    stream adds companies the register just moved (run.admit_newcomers)
+    and a long enrichment writes as it goes. A reader that opens the
+    file at that moment can see a half-written final line, and a bare
+    json.loads would take the whole stage down over one truncated row
+    that will be complete a second later.
+    """
     with open(path, encoding="utf-8") as handle:
         for line in handle:
-            row = json.loads(line)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if "error" not in row:
                 yield row
 
