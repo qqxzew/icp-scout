@@ -90,7 +90,15 @@ CREATE TABLE IF NOT EXISTS claim (
     quote       TEXT,
     snapshot_id INTEGER NOT NULL REFERENCES snapshot(id),
     run_id      INTEGER REFERENCES run(id),
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    -- The second layer's verdict: does this proven sentence actually
+    -- prove what it was filed under (see llm/prompts/relevance.py).
+    -- Deliberately a separate column rather than a third `state`: the
+    -- state says how the claim is held (quoted or derived) and is
+    -- decided by string containment alone, which is the one property of
+    -- this schema worth protecting. NULL means nobody asked.
+    relevance      TEXT CHECK (relevance IN ('supports', 'unrelated')),
+    relevance_note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_claim_ico ON claim(ico, kind);
 
@@ -124,6 +132,14 @@ CREATE TABLE IF NOT EXISTS delivered (
 # Anything that changes this invalidates existing quotes, so it changes
 # with the same care as a database migration.
 _WHITESPACE = re.compile(r"\s+")
+
+# The two verdicts the relevance judge may write on a claim. Defined
+# here, next to the column that stores them, so verify.py and the agent
+# that produces them read the same two strings instead of each spelling
+# them out - a typo in one of the two would silently mean "nobody
+# judged this", which is the safe-looking wrong answer.
+SUPPORTS = "supports"
+UNRELATED = "unrelated"
 
 
 def normalize(text):
@@ -179,6 +195,15 @@ class Archive:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(snapshot)")}
         if "kind" not in columns:
             self.db.execute("ALTER TABLE snapshot ADD COLUMN kind TEXT")
+        # Same story one table over: the relevance verdict arrived after
+        # 700-odd claims were already stored. Those keep NULL, which is
+        # the honest value - nobody judged them - and every reader treats
+        # NULL as "still counts", so an old claim is not quietly demoted
+        # by a column that did not exist when it was written.
+        claim_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(claim)")}
+        if "relevance" not in claim_columns:
+            self.db.execute("ALTER TABLE claim ADD COLUMN relevance TEXT")
+            self.db.execute("ALTER TABLE claim ADD COLUMN relevance_note TEXT")
         self.db.commit()
         # RLock, not Lock: store() calls latest() internally while
         # already holding the lock, and a plain Lock would deadlock a
@@ -343,6 +368,30 @@ class Archive:
                 " ORDER BY c.created_at DESC",
                 (str(ico).zfill(8), kind, kind),
             ).fetchall()
+
+    def set_relevance(self, claim_id, verdict, note=None):
+        """Record whether a proven claim actually proves what it was filed under.
+
+        Written by llm/prompts/relevance.py, read by select.py and
+        card.py. The verdict is checked against the two allowed values
+        here rather than trusted from the caller, for the same reason
+        add_claim() checks `state`: a third spelling would read as NULL
+        to every consumer, which means "unjudged" - a wrong answer that
+        looks exactly like a correct one.
+
+        Survives a re-run by construction: add_claim() treats a claim
+        with the same value and quote as the same claim and updates it
+        rather than inserting a second, so the verdict stays attached to
+        the statement it was made about.
+        """
+        if verdict not in (SUPPORTS, UNRELATED):
+            raise ValueError(f"relevance must be {SUPPORTS} or {UNRELATED}, got {verdict!r}")
+        with self._lock:
+            self.db.execute(
+                "UPDATE claim SET relevance = ?, relevance_note = ? WHERE id = ?",
+                (verdict, note, claim_id),
+            )
+            self.db.commit()
 
     def add_discard(self, ico, kind, value, quote, snapshot_id, run_id=None):
         """Record one hallucination: a quote the model claimed but the
