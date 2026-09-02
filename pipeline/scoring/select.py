@@ -3,11 +3,16 @@
 The formula, settled in conversation rather than guessed, is deliberately
 small - three stages, each doing one job and nothing else:
 
-    FIT   already done by the time this module runs. res_bulk.py's
-          candidate list *is* the FIT-qualified set - size and NACE are
-          hard filters applied there, not here. Distance is never a
-          filter (the ICP says "preferovaně", not "pouze"); it is a sort
-          key the UI applies for display, not a reason to drop anyone.
+    FIT   two halves. The hard one is eligible(): the salesperson's
+          saved brief (filters/brief.py) and the negative filters
+          (filters/negative.py) decide who may be considered at all.
+          The soft one is fit_assessment() plus distance: industry tier,
+          production mode and how far the company sits from the brief's
+          origin never exclude anybody - they group the survivors, and
+          the group is the first thing the ordering looks at. Distance
+          is a sort key rather than a filter because the ICP says
+          "preferovaně", not "pouze"; a radius somebody typed by hand is
+          the one exception and it is applied earlier, in brief.py.
 
     NOW   a gate, not a score. A company passes if it has at least one
           dated event within the run window - and the window is 7 days
@@ -16,11 +21,21 @@ small - three stages, each doing one job and nothing else:
           the expensive PAIN pass at all. This is what keeps a weekly
           run cheap: only NOW-gated companies ever reach harvest().
 
-    PAIN  ranks what NOW let through. Not a verdict-scorer - a count of
-          how much verifiable evidence exists for a company. More
-          evidence means a stronger card, so "we can say the most about
-          this company, with sources" is the tie-breaker when there are
-          more NOW-qualified companies than five slots in a week.
+    PAIN  no longer ranks anything, and that is a result rather than a
+          simplification. It was a weighted sum, and the sum turned out
+          to be one term wearing eight hats: `facts` carried 62.6 % of
+          the points and correlates +0.81 with the number of pages
+          harvested from the site, so the week's five were chosen
+          largely by whose website was biggest - and only 35 % of random
+          weight vectors reproduced the same five. Two experiments then
+          showed no better numbers were available: against companies
+          that demonstrably bought planning software, neither the
+          hand-built components (p = 0.72-1.00) nor a 1536-dimension
+          embedding of the same sites (AUC 0.39) separated buyers from
+          anyone else. So PAIN became what it can honestly be - the
+          evidence a salesperson reads on the card - and what orders the
+          list is the class of the REASON, graded by the brief. See
+          reason_class() and ordering().
 
 Nothing here fetches anything. Every number is read from files and the
 archive that earlier pipeline stages already wrote - running this costs
@@ -38,9 +53,13 @@ from collections import Counter
 from pathlib import Path
 
 from pipeline.evidence.archive import Archive
+from pipeline.evidence.verify import counts_as_evidence, usable
+from pipeline.filters import brief as brief_filter
+from pipeline.filters import negative
 from pipeline.signals import mode as mode_signal
 from pipeline.signals.now import (SUBSIDY_WINDOW, find as now_events, load_companies,
                                   load_history, load_tenders)
+from pipeline.sources.coords import distance_km
 from pipeline.sources.dotace_eu import load as load_subsidies
 
 ARES_CANDIDATES = Path("data/raw/ares_candidates_v2.jsonl")
@@ -79,6 +98,37 @@ def load_mpsv_by_ico(path=MPSV_VACANCIES):
             row = json.loads(line)
             out.setdefault(row["ico"], []).append(row)
     return out
+
+
+# ---------------------------------------------------------------------------
+# FIT, the hard half: who may be considered at all
+# ---------------------------------------------------------------------------
+
+
+def eligible(companies, icp):
+    """The pool a run may draw from, and the funnel that produced it.
+
+    Both entry points go through this - run.py's gate before the
+    expensive stages, and this module's own CLI - because they used to
+    disagree. run.py applied the negative filters and select.py did not,
+    so `python -m pipeline.scoring.select` ranked companies in
+    insolvency that a full run had already thrown out, and neither
+    applied the saved brief at all. Two pools are two answers to "who
+    was considered this week", and the card would then describe one
+    while the ranking described the other.
+
+    Returns (pool, funnel). The funnel is per-reason rather than a
+    single number so a small pool can be explained instead of guessed
+    at - see filters/brief.py.
+    """
+    kept, rejected = brief_filter.apply(companies, icp)
+    pool = [c for c in kept if negative.verdict(c) != negative.EXCLUDE]
+    return pool, {
+        "total": len(companies),
+        "brief_rejected": dict(rejected),
+        "excluded": len(kept) - len(pool),
+        "pool": len(pool),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -154,13 +204,24 @@ def website_richness(archive, ico, site_status=None):
 
 
 def contact_richness(contacts_row):
-    """Named people with a channel, and whether any is register-confirmed."""
+    """Named people with a channel, plus whether there is any channel at all.
+
+    `any_channel` is what decides whether the company may be handed over
+    (see reachable() below), so it counts the switchboard and the info@
+    address too: a card the salesperson cannot act on is not a lead, but
+    a general number is something to act on and a name with no way to
+    reach it is not.
+    """
     if not contacts_row:
-        return {"named_people": 0, "register_confirmed": 0}
+        return {"named_people": 0, "register_confirmed": 0, "any_channel": False}
     people = contacts_row.get("people") or []
     reachable = [p for p in people if p.get("email") or p.get("phone")]
     confirmed = [p for p in reachable if (p.get("source") or "register") == "register"]
-    return {"named_people": len(reachable), "register_confirmed": len(confirmed)}
+    company = contacts_row.get("company") or {}
+    shared = bool(company.get("emails") or company.get("phones")
+                  or company.get("personal_emails"))
+    return {"named_people": len(reachable), "register_confirmed": len(confirmed),
+            "any_channel": bool(reachable) or shared}
 
 
 def vacancy_richness(vacancies):
@@ -180,12 +241,24 @@ NACE_CORE = {"16", "18", "22", "23", "25", "26", "27", "28", "31", "32", "33"}
 NACE_SERVICE = {"38", "41", "42", "43", "49", "77", "81", "95"}
 
 # Order in which production-mode verdicts match the ICP's first
-# criterion. Lower is better. serial is the one the ICP explicitly
-# rules out; unknown ranks between the two, because absence of evidence
-# is not evidence of the wrong mode (hypothesis E).
+# criterion. Lower is better, and only a company that positively looks
+# serial is moved down.
+#
+# `unknown` used to sit at 1, between made-to-order and serial, on the
+# reasoning that it is "less good than proven". Measured on a real gate:
+# 14 of 31 companies had not a single harvested page, 12 of those were
+# unknown for that reason alone, and the mode rank correlated -0.53 with
+# the page count. So the middle position was not ranking production
+# mode at all - it was ranking whether the crawler had managed to read
+# the company, and pushing down every firm whose site we could not open.
+# That is exactly the mistake hypothesis E names: absence of evidence
+# read as evidence of the wrong answer. A company we could not read is
+# not a serial producer; it is a company we could not read, and the
+# levels below - the class of its reason, its distance - are the ones
+# that should place it.
 MODE_RANK = {
     "made_to_order": 0, "mixed": 0, "small_batch": 0, "leaning_made_to_order": 0,
-    "unknown": 1,
+    "unknown": 0,
     "leaning_serial": 2, "serial": 3,
 }
 
@@ -217,7 +290,8 @@ def fit_assessment(archive, company, site_status=None):
     # scan over current documents is the fallback, not the authority.
     sides = set()
     for claim in archive.claims(ico):
-        if claim["kind"].startswith("production_mode:") and claim["state"] == "fact":
+        if (claim["kind"].startswith("production_mode:") and claim["state"] == "fact"
+                and counts_as_evidence(claim)):
             sides.add(claim["kind"].split(":", 1)[1])
     if sides:
         if "made_to_order" in sides and "serial" in sides:
@@ -278,16 +352,31 @@ def verified_richness(archive, ico):
     Facts and inferences are counted apart because they are not the
     same currency: a fact carries a quote found in an archived page, an
     inference is the model reasoning without one.
+
+    Two kinds of claim are counted and then not scored, and both were
+    raising scores before this line existed (evidence/verify.py has the
+    reasoning for each):
+
+      * a quoteless statement that the evidence is NOT there. Four of
+        the five inferences on the last run's top card were of this
+        shape, so the company was ranked higher for every pain sign it
+        turned out not to have.
+      * a fact the relevance judge marked as beside the point.
+
+    They stay in the archive - they were really produced and the record
+    is the record - and `discounted` carries how many there were, so
+    "this card is thin because half its evidence was discounted" stays
+    visible instead of looking like a company nobody could say anything
+    about.
     """
-    facts = inferences = 0
-    for row in archive.claims(ico):
-        if row["kind"].startswith("now:"):     # NOW is a gate, counted separately
-            continue
-        if row["state"] == "fact":
-            facts += 1
-        elif row["state"] == "inference":
-            inferences += 1
-    return {"facts": facts, "inferences": inferences}
+    # NOW is a gate and is counted separately, so it never reaches the
+    # PAIN score.
+    rows = [row for row in archive.claims(ico) if not row["kind"].startswith("now:")]
+    kept = usable(rows)
+    facts = sum(1 for row in kept if row["state"] == "fact")
+    inferences = sum(1 for row in kept if row["state"] == "inference")
+    return {"facts": facts, "inferences": inferences,
+            "discounted": len(rows) - len(kept)}
 
 
 def pain_score(website, contact, vacancy, now_event_count, verified=None):
@@ -317,24 +406,281 @@ def pain_score(website, contact, vacancy, now_event_count, verified=None):
     )
 
 
-def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events, company=None):
+# ---------------------------------------------------------------------------
+# The reason to call, graded by the brief rather than by a weight
+# ---------------------------------------------------------------------------
+#
+# WHY THIS REPLACED A SCORE. pain_score used to decide the week's five,
+# and three measurements took it apart: `facts` carried 62.6 % of every
+# point, `facts` correlates +0.81 with the raw number of pages harvested
+# from a site, and only 35 % of random weight vectors reproduced the same
+# top five. So the five companies handed over were chosen mostly by whose
+# website was biggest, and the numbers deciding it were invented.
+#
+# Two experiments then asked whether better numbers were even possible.
+# Against companies that demonstrably bought planning software (an EU
+# subsidy naming a vendor, or an awarded procurement), the hand-built
+# components separated nothing: a dysfunction sign was found for 9/19
+# buyers, 10/22 equally-subsidised non-buyers, 5/13 of a random draw,
+# p = 0.72-1.00. Embedding the same sites in 1536 dimensions did no
+# better - buyers against non-buyers gave a cross-validated AUC of 0.39,
+# below chance. The ceiling is the source: a company's public website
+# does not say whether it is about to buy.
+#
+# So PAIN stops deciding and becomes what it can honestly be - the
+# evidence printed on the card - and the order comes from the brief.
+# Every line below can be pointed at in the ICP document:
+#
+#   A  subsidy signed, no procurement started. Section 6's matrix calls
+#      this "lepsi pripad, volat ted" - money already allocated to our
+#      category, purchase not yet begun. The strongest wording in the
+#      whole document.
+#   B  someone arrived in or left the leadership. Triggers 6 and 7, and
+#      the cleanest signal there is - a dated register entry.
+#   C  an open procurement. They are buying now, the specification is
+#      already written, so we are catching up rather than leading.
+#   D  growth: a management or planning vacancy.
+#   E  everything else, including the case the matrix calls lost - a
+#      subsidy with a procurement already awarded. That falls here by
+#      construction rather than by a rule of its own: the company has a
+#      relevant tender, so it cannot be A, and nothing else claims it.
+#
+# A AND B WERE THE OTHER WAY ROUND UNTIL THE READING WAS CHECKED. "The
+# cleanest signal" in section 2 is a statement about VERIFIABILITY - a
+# structured register entry with a date, impossible to hallucinate - not
+# about the likelihood of a purchase. Section 6 makes the likelihood
+# claim, and it makes it about the subsidy. Measurements on the buyer
+# label agree, but they cannot be cited as proof: that label is defined
+# partly by holding a subsidy, so of course subsidies predict it. The
+# order rests on the document and on the mechanism - allocated money,
+# procurement not started - and the measurement is only consistent
+# with it.
+FAMILY = {
+    "subsidy_signed": "subsidy",
+    "director_joined": "registry",
+    "director_departed": "registry",
+    "owner_joined": "registry",
+    "owner_departed": "registry",
+    "tender_open": "tender",
+    "management_vacancy": "growth",
+}
+
+REASON_ORDER = ("A", "B", "C", "D", "E")
+
+REASON_LABEL = {
+    "A": "dotace bez zahájené zakázky",
+    "B": "změna ve vedení nebo vlastnictví",
+    "C": "otevřená zakázka",
+    "D": "inzerát na řídící/plánovací roli",
+    "E": "jiná událost",
+}
+
+# Which family defines each class, for reading the age of the event that
+# actually put the company where it is.
+CLASS_FAMILY = {"A": "subsidy", "B": "registry", "C": "tender", "D": "growth"}
+
+
+def families(events):
+    """The kinds of thing that happened, collapsed to their signal group."""
+    return {FAMILY.get(event["kind"], "other") for event in events}
+
+
+def reason_class(events, tenders_for_company=None):
+    """Which class of reason this company has, A being the strongest.
+
+    `tenders_for_company` decides one thing only: whether a subsidy is
+    still unspent. The matrix in section 6 turns on exactly that - money
+    granted and no procurement is the case to call about, money granted
+    with the procurement already awarded is the case that is gone.
+    """
+    present = families(events)
+    has_tender = any(row.get("relevant") for row in tenders_for_company or ())
+
+    if "subsidy" in present and not has_tender:
+        return "A"
+    if "registry" in present:
+        return "B"
+    if "tender" in present:
+        return "C"
+    if "growth" in present:
+        return "D"
+    return "E"
+
+
+def class_age_days(events, reason):
+    """Age of the event that put this company in its class.
+
+    Kept as an ordering step, but NOT as a claim about probability. The
+    gap between a registry event and a purchase has a median of 293 days,
+    so an event three days old and one twenty-five days old are equally
+    far from a signature and sorting them by likelihood would be reading
+    noise. What freshness is actually good for is the phone call: "vsiml
+    jsem si, ze jste v pondeli jmenovali noveho jednatele" is an opening,
+    and last Monday opens better than five weeks ago.
+    """
+    family = CLASS_FAMILY.get(reason)
+    ages = [event.get("age_days", 0) for event in events
+            if FAMILY.get(event["kind"], "other") == family]
+    if not ages:
+        ages = [event.get("age_days", 0) for event in events]
+    return min(ages) if ages else 10 ** 6
+
+
+def reason_of(events, tenders_for_company=None):
+    """The whole ordering-relevant view of why this company is on the list.
+
+    `corroborated` is the one thing measurement supported outright: two
+    or more different kinds of event at once was the only feature with a
+    real lift on the buyer label (1.85, 24 % against 13 %).
+
+    Counted by KIND rather than by signal family, which is how the lift
+    was measured, and looking at what actually fires makes the reason
+    clear: 11 of 31 gated companies qualify, and most of them because a
+    departure is paired with an arrival. That is one succession rather
+    than two independent signs - but a seat vacated AND refilled is a
+    new person in the chair, which is the ICP's trigger 7 on top of its
+    trigger 6, and it is a stronger fact than a bare departure. Counting
+    by family instead gives 0 of 31, i.e. a level that never fires and
+    a feature whose measured lift is thrown away.
+    """
+    present = families(events)
+    reason = reason_class(events, tenders_for_company)
+    kinds = {event["kind"] for event in events}
+    return {
+        "class": reason,
+        "label": REASON_LABEL[reason],
+        "families": sorted(present),
+        "kinds": sorted(kinds),
+        "corroborated": len(kinds) >= 2,
+        "age_days": class_age_days(events, reason),
+    }
+
+
+def geography(company, icp):
+    """How far the company is from the brief's origin, and whether that is near.
+
+    Three states, not two, for the reason the whole project keeps
+    repeating: `preferred` is None when the brief names no radius or
+    when RUIAN never placed the company's address. An unplaced company
+    is not a distant one. The ordering below does treat both as "not
+    near" - we cannot promise a shop-floor visit to a company we cannot
+    locate - but the card says which of the two it is rather than
+    printing a distance nobody measured.
+    """
+    location = (icp or {}).get("location") or {}
+    limit = location.get("km")
+    distance = distance_km(location.get("origin"), company.get("coordinates"))
+    return {
+        "distance_km": distance,
+        "from": location.get("from") or (location.get("origin") or {}).get("name"),
+        "limit_km": limit,
+        "preferred": None if (distance is None or not limit) else distance <= limit,
+    }
+
+
+def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events,
+             company=None, icp=None, tenders=None):
+    company = company or {"ico": ico}
     site = websites.get(ico, {})
     web_r = website_richness(archive, ico, websites)
     contact_r = contact_richness(contacts.get(ico))
     vac_r = vacancy_richness(vacancies_by_ico.get(ico, []))
     verified_r = verified_richness(archive, ico)
-    fit = fit_assessment(archive, company or {"ico": ico}, websites)
+    fit = fit_assessment(archive, company, websites)
     score = pain_score(web_r, contact_r, vac_r, len(events), verified_r)
+    # The negative filters' second verdict. `exclude` never reaches here
+    # - eligible() dropped it - so everything found at this point is the
+    # kind that lowers a company without erasing it, and it is carried
+    # whole (field and value included) because the card has to be able
+    # to say what it was, not just that there was one.
+    findings = negative.check(company)
     return {
         "ico": ico,
         "site_status": site.get("status"),
         "site_domain": site.get("domain"),
         "now_events": events,
         "fit": fit,
+        "reason": reason_of(events, (tenders or {}).get(ico)),
+        "geography": geography(company, icp),
+        "negative": findings,
+        "demoted": negative.demotes(findings),
+        # Not part of the ordering - a gate on being handed over at all.
+        # See undeliverable().
+        "undeliverable": undeliverable(site, contact_r),
         "pain": {"website": web_r, "contact": contact_r, "vacancy": vac_r,
                  "verified": verified_r},
         "pain_score": score,
     }
+
+
+def undeliverable(site, contact):
+    """Why this company must not be handed over, if it must not. Not a score.
+
+    Two conditions, both about whether a dossier can exist at all rather
+    than about how good the company is:
+
+    AN UNPROVEN DOMAIN IS SOMEBODY ELSE'S COMPANY 46 % OF THE TIME -
+    website.py measured that on its own guesses, and a `probable` status
+    means exactly that: the domain matched the name and nothing else.
+    ROMKA s.r.o. reached a week's top five on romka.eu, a site belonging
+    to an unrelated person, and it brought a contact with it. Reading
+    such a site for research is one thing; putting a stranger's phone
+    number on a card as this company's is not, and the fastest way to
+    make that impossible is to refuse to deliver the company at all.
+
+    NO CHANNEL, NO DOSSIER. A card with a name from the register and no
+    e-mail or phone anywhere is a list entry, which is the one thing the
+    brief says the output must not be.
+
+    Neither is a permanent verdict. The company stays in the base and in
+    the ranking; next week its domain may be proven or the contact sweep
+    may reach it.
+    """
+    problems = []
+    if (site or {}).get("status") != "proven":
+        problems.append("neprokázaný web")
+    if not contact.get("any_channel"):
+        problems.append("žádný kontakt")
+    return problems
+
+
+def ordering(row):
+    """The sort key. Six steps, each traceable to the brief or to a measurement.
+
+    1. FIT group - industry tier, then production mode. Put anything
+       else first and a construction firm with a subsidy outranks a
+       manufacturer from the core of the ICP; that exact case reached a
+       card once already (KVAZAR).
+    2. A deprioritising negative finding. "Every establishment closed"
+       is about whether the company can buy at all, so it outweighs
+       every reason below it. This is where filters/negative.py's third
+       verdict finally does something: it defined a PENALTY in points
+       that nothing ever subtracted, and points were the wrong shape
+       anyway - an uncalibrated 8 either swamps the score or drowns in
+       it. One step down the order says exactly what was meant.
+    3. Class of the reason, A to E - see reason_class() for where each
+       line comes from in the document.
+    4. Corroboration: two or more different kinds of event at once. The
+       only feature that showed a real lift against the buyer label
+       (1.85, 24 % against 13 %).
+    5. Inside the preferred radius. Geography is a row in the ICP's own
+       "kdo to je" table and RTsoft drives to the shop floor.
+    6. Freshness within the class - as an opening line for the call, not
+       as a probability. See class_age_days().
+
+    Then, and only then, the count of verified facts, purely to break a
+    tie between two companies that are equal on all six. PAIN no longer
+    chooses anybody; it fills the card.
+    """
+    return (
+        row["fit"]["rank"],
+        1 if row["demoted"] else 0,
+        REASON_ORDER.index(row["reason"]["class"]),
+        0 if row["reason"]["corroborated"] else 1,
+        0 if row["geography"]["preferred"] else 1,
+        row["reason"]["age_days"],
+        -row["pain"]["verified"]["facts"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -342,15 +688,27 @@ def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events, company
 # ---------------------------------------------------------------------------
 
 
-def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=None):
-    """Full weekly selection: FIT (already done) -> NOW gate -> PAIN rank.
+def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=None,
+        icp=None):
+    """Full weekly selection: FIT -> NOW gate -> PAIN rank.
 
     Returns the ranked list of NOW-qualified companies, longest first;
     the caller decides how many of them become the week's five - keeping
     that a caller decision, not baked in here, is what lets the CLI print
     "here are all 23 that qualified, and the top 5" in one pass.
+
+    `icp` is needed even when the gate result is handed in: the brief
+    carries the origin every distance is measured from, and the ordering
+    below reads it.
     """
     archive = archive or Archive()
+    if icp is None:
+        # Lazy, and only on the standalone path: run.py always passes the
+        # brief it started with, and importing it at module level would
+        # tie this module to the runner it is called from.
+        from pipeline.run import load_icp
+        icp = load_icp()
+
     companies = list(load_companies(ARES_CANDIDATES))
     history = load_history()
     websites = load_jsonl(WEBSITES)
@@ -364,25 +722,43 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
     # qualified, and the card would then be built for one set while the
     # ranking described another.
     if qualified is None:
-        qualified = now_qualified(companies, history, window_days)
+        pool, funnel = eligible(companies, icp)
+        print(f"brief and negative filters: {funnel['total']} -> {funnel['pool']}",
+              file=sys.stderr)
+        qualified = now_qualified(pool, history, window_days)
     by_ico = {c["ico"]: c for c in companies}
 
+    # Loaded once for the whole ranking: reason_class() needs to know
+    # whether a company's subsidy already has a procurement against it,
+    # and that answer lives in the tender file rather than in the events.
+    tenders = load_tenders()
     ranked = [
         evaluate(ico, archive, websites, contacts, vacancies_by_ico, events,
-                 company=by_ico.get(ico))
+                 company=by_ico.get(ico), icp=icp, tenders=tenders)
         for ico, events in qualified.items()
     ]
     # FIT orders the groups, PAIN orders inside them. Sorting purely on
     # pain_score is what let a construction firm with a rich site sit
     # level with manufacturers: the score measures how much we can
     # prove, and proof of the wrong trade counted the same as proof of
-    # the right one.
-    ranked.sort(key=lambda r: (r["fit"]["rank"], -r["pain_score"]))
+    # the right one. See ordering() for the full sequence.
+    ranked.sort(key=ordering)
 
     for row in ranked:
         row["name"] = by_ico[row["ico"]].get("name")
 
-    return ranked[:top], ranked
+    # Ranked keeps everyone, so a run can still be inspected; only the
+    # deliverable slice is filtered. See undeliverable() - neither
+    # condition removes a company from the base.
+    deliverable = [row for row in ranked if not row["undeliverable"]]
+    held = Counter(problem for row in ranked for problem in row["undeliverable"])
+    if held:
+        print(f"{len(ranked) - len(deliverable)} of {len(ranked)} qualified companies "
+              f"held back: " + ", ".join(f"{count}× {reason}"
+                                         for reason, count in held.most_common()),
+              file=sys.stderr)
+
+    return deliverable[:top], ranked
 
 
 if __name__ == "__main__":
@@ -395,10 +771,21 @@ if __name__ == "__main__":
     top5, all_qualified = run(args.window, args.top)
 
     print(f"NOW-qualified this window: {len(all_qualified)}", file=sys.stderr)
-    print(f"top {len(top5)}, ranked by PAIN richness:\n", file=sys.stderr)
+    print(f"top {len(top5)}, ordered by reason class (A best), then corroboration,"
+          f" radius, freshness:\n", file=sys.stderr)
     for rank, row in enumerate(top5, 1):
-        print(f"{rank}. {row['name'][:42]:44} score={row['pain_score']:3}  "
-              f"site={row['site_status']}  now={len(row['now_events'])} event(s)",
+        geo = row["geography"]
+        # Everything the ordering actually looked at, in the order it
+        # looked at it - a ranking nobody can read is a ranking nobody
+        # can argue with.
+        where = "?" if geo["distance_km"] is None else f"{geo['distance_km']:.0f} km"
+        reason = row["reason"]
+        print(f"{rank}. {(row['name'] or '')[:34]:36} "
+              f"{row['fit']['nace_tier']:8}{row['fit']['mode']:20}"
+              f"{reason['class']}{'+' if reason['corroborated'] else ' '} "
+              f"{reason['age_days']:>4}d {where:>7}"
+              f"{'  ↓' if row['demoted'] else '   '}  "
+              f"{row['pain']['verified']['facts']:2} fact(s)",
               file=sys.stderr)
 
     print(json.dumps({"top": top5, "qualified": all_qualified}, ensure_ascii=False, indent=2))

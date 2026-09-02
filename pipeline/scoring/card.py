@@ -16,6 +16,17 @@ layer rather than presentation choices:
 * discards are counted and shown. "The model claimed three things we
   could not verify and they were dropped" is information about how much
   to trust the rest of the card.
+* what was verified and still does not count is counted too, on the
+  same line. A quote the relevance judge found beside the point, and a
+  quoteless "there is no mention of X", are both real records in the
+  archive that must not be read as evidence - and a card that shows two
+  facts because five statements were discounted is a different card
+  from one where there were only two to begin with.
+* every label is in Czech, including the ones that come from a claim
+  kind. `pain`, printed six times in a row, told the salesperson
+  nothing about which of the ICP's signs had fired; and
+  `production_mode:made_to_order` is 29 characters in a 22-character
+  column, so it ran into its own value.
 
 TURNOVER IS FETCHED HERE AND NOWHERE EARLIER. sbirka.py is a slow,
 multi-request source (subject id -> document list -> detail page ->
@@ -37,7 +48,10 @@ from datetime import date
 from pathlib import Path
 
 from pipeline.evidence.archive import Archive
-from pipeline.scoring.select import CONTACTS, WEBSITES, fit_assessment, load_jsonl
+from pipeline.evidence.verify import counts_as_evidence, usable
+from pipeline.filters import negative
+from pipeline.scoring.select import (CONTACTS, WEBSITES, fit_assessment, geography,
+                                     load_jsonl)
 from pipeline.signals.now import load_tenders, parse_deadline as parse_tender_deadline
 
 TURNOVER_CACHE = Path("data/raw/turnover.jsonl")
@@ -210,7 +224,7 @@ def certificates_for(ico, cache_path=Path("data/raw/certificates.jsonl")):
 
 
 def build(ico, archive, companies=None, websites=None, contacts=None,
-          turnover_cache=None, fetch_turnover=True, tenders=None):
+          turnover_cache=None, fetch_turnover=True, tenders=None, icp=None):
     """Everything known about one company, grouped the way it is read."""
     ico = str(ico).zfill(8)
     websites = websites if websites is not None else load_jsonl(WEBSITES)
@@ -218,12 +232,37 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
     # Loaded rather than left to default to None - the fourth time an
     # optional argument would have quietly switched a source off.
     tenders = tenders if tenders is not None else load_tenders()
+    if icp is None:
+        # The brief carries the origin distance is measured from. A run
+        # passes its own; building one card by hand falls back to the
+        # saved brief, the same one the pipeline would run with.
+        from pipeline.run import load_icp
+        icp = load_icp()
     company = (companies or {}).get(ico, {})
 
     claims = archive.claims(ico)
     evidence = {"facts": [], "inferences": []}
+    # The claims that survive both guards and the duplicate left behind
+    # by pain.py's kind split; everything else is counted, not printed.
+    kept_ids = {row["id"] for row in usable([c for c in claims
+                                             if not c["kind"].startswith("now:")])}
+    # Claims that were really produced and really verified, and still
+    # must not be read as evidence: a quoteless "there is no mention of
+    # X", and a quote the relevance judge found beside the point. They
+    # stay in the archive - the record is the record - and are counted
+    # here so a thin card says why it is thin instead of looking like a
+    # company nobody could learn anything about. See evidence/verify.py.
+    discounted = 0
     for row in claims:
         if row["kind"].startswith("now:"):
+            continue
+        if not counts_as_evidence(row):
+            discounted += 1
+            continue
+        # A duplicate is not a loss of information - the same statement
+        # is printed once, under the sign it belongs to - so it is
+        # skipped without being counted as anything.
+        if row["id"] not in kept_ids:
             continue
         item = {
             "kind": row["kind"], "value": row["value"],
@@ -289,6 +328,12 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         "region": company.get("region"),
         "district": company.get("district"),
         "city": company.get("city"),
+        # How far this is from where the brief measures from. The ICP
+        # calls geography a preference, so it never removed anybody -
+        # but it was not on the card either, and a run handed over a
+        # company in Ostrava, 380 km from the Plzeň the salesperson
+        # drives out of, with nothing anywhere saying so.
+        "geography": geography(company, icp),
         # ARES phrases the size band in English ("100-199 employees").
         # The card is Czech and is read by a Czech salesperson, so the
         # band is said in Czech here rather than passed through.
@@ -313,9 +358,16 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         # says where each came from.
         "tender_contacts": tender_people,
         "tenders": relevant_tenders(ico, tenders),
+        # What the negative filters found and did not exclude on. A
+        # company whose every establishment is closed still gets a card -
+        # nothing in a register proves it will not buy - but the
+        # salesperson has to see the finding, with the field it came
+        # from, before spending a call on it.
+        "negative": negative.check(company),
         "why_now": now_events,
         "evidence": evidence,
         "discarded": len(archive.discards(ico=ico)),
+        "discounted": discounted,
     }
 
 
@@ -323,6 +375,50 @@ ARES_REST = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest"
 
 LABEL = 22          # width of the label column
 VALUE = 66          # width of the value column before the source
+
+
+# The card is read by a Czech salesperson, so the label column is
+# Czech. Claim kinds are English identifiers by the project's own rule,
+# and printing them raw did two things wrong at once: the reader could
+# not tell which of the ICP's pain signs had fired - every one of them
+# said `pain` - and `production_mode:made_to_order` is 29 characters in
+# a 22-character column, so the value ran straight into the label with
+# no space between them.
+CLAIM_LABELS = {
+    "pain:scale": "Rozsah k rozvržení",
+    "pain:manual_data": "Ruční přenos dat",
+    "pain:tacit_knowledge": "Know-how v hlavě",
+    # Claims written before pain.py split the kind by sign. Kept so old
+    # evidence still reads as something, rather than disappearing from
+    # cards built on an archive that predates the change.
+    "pain": "Signál bolesti",
+    "production_mode": "Doklad režimu",
+}
+
+
+def plural(count, one, few, many):
+    """Czech counts: 1 fakt, 2 fakty, 5 faktů.
+
+    The summary line at the foot of every card said "1 úsudků", which is
+    the kind of small wrongness that makes a reader trust the rest of
+    the page less - and this card is asking to be trusted about a
+    company's turnover.
+    """
+    if count == 1:
+        return one
+    return few if 2 <= count <= 4 else many
+
+
+def label_for(kind):
+    """The Czech label for a claim kind, falling back to the kind itself.
+
+    An unknown kind is printed as it is rather than hidden or renamed to
+    something generic: a label nobody wrote is a gap in this dictionary,
+    and it should be visible as one.
+    """
+    if kind in CLAIM_LABELS:
+        return CLAIM_LABELS[kind]
+    return CLAIM_LABELS.get(kind.split(":", 1)[0], kind)
 
 
 def row(label, value, source="", state="fact"):
@@ -339,7 +435,14 @@ def row(label, value, source="", state="fact"):
     because "not required to file" and "filed as a scan" are different
     facts about a company and collapsing them loses information
     (hypothesis E).
+
+    The label is clamped one character short of its column so there is
+    always a gap before the value. Padding alone does not do this: a
+    label longer than the column is printed in full by f-string padding
+    and the value simply follows it.
     """
+    if len(label) > LABEL - 1:
+        label = label[:LABEL - 2] + "…"
     if not value:
         return f"  {label:<{LABEL}}"
     mark = "~ " if state == "inference" else ""
@@ -350,6 +453,31 @@ def row(label, value, source="", state="fact"):
     if len(text) > VALUE - 2:
         text = text[:VALUE - 3] + "…"
     return f"  {label:<{LABEL}}{text:<{VALUE}}{source}"
+
+
+def distance_note(geo):
+    """"185 km (výchozí bod Plzeň)" - and, when it is too far, that too.
+
+    Empty when the company has no coordinates, which is the card's rule
+    for everything: an unplaced company is not a distant one, and
+    printing "? km" would invite reading it as a large number.
+
+    Phrased around the place name rather than "od Plzně" on purpose: the
+    origin is whatever town the salesperson typed, and Czech would
+    decline it. An apposition ("výchozí bod Plzeň") is grammatical for
+    every name without the code having to know how to inflect it.
+    """
+    geo = geo or {}
+    if geo.get("distance_km") is None:
+        return ""
+    origin = geo.get("from") or "Plzeň"
+    note = f"{geo['distance_km']:.0f} km (výchozí bod {origin})"
+    if geo.get("limit_km") and geo.get("preferred") is False:
+        # Said, not enforced: the ICP's word is "preferovaně". The
+        # ordering already put this company behind the nearer ones; the
+        # card only has to make sure nobody dials it by surprise.
+        note += f" — mimo preferovaný okruh {geo['limit_km']} km"
+    return note
 
 
 def render(card):
@@ -372,6 +500,7 @@ def render(card):
         row("IČO", ico, ares),
         row("Sídlo", " · ".join(x for x in (card.get("city"), card.get("district"),
                                             card.get("region")) if x), ares),
+        row("Vzdálenost", distance_note(card.get("geography")), "RÚIAN"),
         row("Velikost", card.get("size"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
         row("NACE", card.get("nace"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
     ]
@@ -393,6 +522,16 @@ def render(card):
     joined = " · ".join(x for x in (mode_note, tier_note) if x)
     out.append(row("Režim výroby", joined,
                    f"https://{card['website']['domain']}" if card["website"].get("domain") else ""))
+
+    # Register findings that lower a company without excluding it. High
+    # up on purpose - "all establishments are closed" changes whether
+    # the rest of the card is worth reading - and each one names the
+    # field it came from, so the salesperson can look at the same field
+    # in ARES and disagree.
+    for finding in card.get("negative") or []:
+        out.append(row("Riziko",
+                       f"{finding['reason']} ({finding['field']}: {finding['value']})",
+                       ares))
 
     # Two independent sources, two rows - never merged. The register's
     # figure is audited; the website's is the company talking about
@@ -485,9 +624,27 @@ def render(card):
                            f"{tender['cpv']} {tender.get('cpv_name', '')[:44]}",
                            tender.get("url") or ""))
 
+    # Why this company and not another - the question the brief asks in
+    # requirement 7 and the card never answered. It explains the ORDER,
+    # so it sits directly above the reason itself.
+    reason = card.get("reason") or {}
+    if reason:
+        bits = [f"třída {reason['class']} — {reason['label']}"]
+        if reason.get("corroborated"):
+            bits.append(f"{len(reason.get('kinds') or [])} typy událostí najednou")
+        if card.get("rank"):
+            bits.append(f"{card['rank']}. z {card.get('of_qualified', '?')} kvalifikovaných")
+        out.append(row("Pořadí", " · ".join(bits)))
+
     if card["why_now"]:
         for event in card["why_now"]:
-            out.append(row("Proč teď", f"{event['kind']}: {event['value']}",
+            # The value is already a Czech sentence - signals/now.py's
+            # describe() writes it for exactly this line. Prefixing it
+            # with the event kind put `director_departed:` in front of
+            # "Ing. Čeněk Fajkus opustil statutární orgán", which is an
+            # English identifier explaining a Czech sentence that
+            # explains itself.
+            out.append(row("Proč teď", event["value"],
                            event.get("url") or "registr"))
     else:
         out.append(row("Proč teď", ""))
@@ -498,16 +655,26 @@ def render(card):
     for fact in card["evidence"]["facts"]:
         if fact["kind"].startswith(("certificate:", "turnover_web")):
             continue                      # already printed in their own rows
-        out.append(row(fact["kind"], fact["value"], fact["source"]))
+        out.append(row(label_for(fact["kind"]), fact["value"], fact["source"]))
         if fact["quote"]:
             out.append(f"  {'':<{LABEL}}„{fact['quote'][:VALUE - 2]}\"")
     for guess in card["evidence"]["inferences"]:
-        out.append(row(guess["kind"], guess["value"], guess["source"], state="inference"))
+        out.append(row(label_for(guess["kind"]), guess["value"], guess["source"],
+                       state="inference"))
 
     out.append("")
-    out.append(f"  {len(card['evidence']['facts'])} ověřených faktů · "
-               f"{len(card['evidence']['inferences'])} úsudků · "
-               f"{card['discarded']} zahozeno při ověření")
+    # Both ways a statement can fail are counted, because they mean
+    # different things about the card above. "Zahozeno" is the model
+    # quoting something the page does not contain; "nezapočteno" is a
+    # real quote that turned out not to prove the sign it was filed
+    # under, or a statement that the evidence is missing at all.
+    facts, guesses = len(card["evidence"]["facts"]), len(card["evidence"]["inferences"])
+    tail = (f"  {facts} {plural(facts, 'ověřený fakt', 'ověřené fakty', 'ověřených faktů')} · "
+            f"{guesses} {plural(guesses, 'úsudek', 'úsudky', 'úsudků')} · "
+            f"{card['discarded']} zahozeno při ověření")
+    if card.get("discounted"):
+        tail += f" · {card['discounted']} nezapočteno (mimo signál)"
+    out.append(tail)
     return "\n".join(out)
 
 
