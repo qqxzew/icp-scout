@@ -108,6 +108,23 @@ def registry_events(company, window_days, today=None):
     established = parse_date(company.get("established"))
     events = []
 
+    # A departure the present register contradicts is not a departure.
+    # drop_reentries() below pairs a leaving with an arrival, but it can
+    # only see events that were produced - and the mass-event guard a few
+    # lines down deletes exactly the arrival it would need. Live case,
+    # MASKOP 99: both jednatelé were re-entered on 2026-08-29, so the
+    # arrivals were dropped as a mass amendment while TOMÁŠ JUPA's
+    # departure of that same day survived alone, and the card told a
+    # salesperson the man to call had left the board he currently sits
+    # on. Reading the company's current state instead of hoping for a
+    # matching event closes that hole for good.
+    still_listed = {
+        "director_departed": {(p.get("name") or "").casefold()
+                              for p in (company.get("directors") or [])},
+        "owner_departed": {(p.get("name") or "").casefold()
+                           for p in (company.get("owners") or [])},
+    }
+
     groups = (
         ("directors", "director_joined", "since"),
         ("owners", "owner_joined", "since"),
@@ -137,6 +154,11 @@ def registry_events(company, window_days, today=None):
 
         for person, event_date in dated:
             if (today - event_date).days > window_days:
+                continue
+            # ARES spells the same person differently across records
+            # ("TOMÁŠ JUPA" now, "Tomáš Jupa" in the 2016 entry), so the
+            # comparison folds case rather than trusting the spelling.
+            if (person.get("name") or "").casefold() in still_listed.get(kind, ()):
                 continue
             events.append({
                 "kind": kind,
