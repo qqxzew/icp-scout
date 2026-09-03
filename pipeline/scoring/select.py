@@ -6,10 +6,12 @@ small - three stages, each doing one job and nothing else:
     FIT   two halves. The hard one is eligible(): the salesperson's
           saved brief (filters/brief.py) and the negative filters
           (filters/negative.py) decide who may be considered at all.
-          The soft one is fit_assessment() plus distance: industry tier,
-          production mode and how far the company sits from the brief's
-          origin never exclude anybody - they group the survivors, and
-          the group is the first thing the ordering looks at. Distance
+          The soft one is fit_assessment() plus distance: the industry
+          tier and how far the company sits from the brief's origin
+          never exclude anybody - they group the survivors, and the tier
+          is the first thing the ordering looks at. The production mode
+          is read and shown but never ranked on, because no register
+          carries it and the site says what marketing wrote. Distance
           is a sort key rather than a filter because the ICP says
           "preferovaně", not "pouze"; a radius somebody typed by hand is
           the one exception and it is applied earlier, in brief.py.
@@ -240,27 +242,37 @@ def vacancy_richness(vacancies):
 NACE_CORE = {"16", "18", "22", "23", "25", "26", "27", "28", "31", "32", "33"}
 NACE_SERVICE = {"38", "41", "42", "43", "49", "77", "81", "95"}
 
-# Order in which production-mode verdicts match the ICP's first
-# criterion. Lower is better, and only a company that positively looks
-# serial is moved down.
+# THE PRODUCTION MODE DOES NOT ORDER ANYTHING, AND THAT TOOK TWO
+# CORRECTIONS TO GET RIGHT.
 #
-# `unknown` used to sit at 1, between made-to-order and serial, on the
-# reasoning that it is "less good than proven". Measured on a real gate:
-# 14 of 31 companies had not a single harvested page, 12 of those were
-# unknown for that reason alone, and the mode rank correlated -0.53 with
-# the page count. So the middle position was not ranking production
-# mode at all - it was ranking whether the crawler had managed to read
-# the company, and pushing down every firm whose site we could not open.
-# That is exactly the mistake hypothesis E names: absence of evidence
-# read as evidence of the wrong answer. A company we could not read is
-# not a serial producer; it is a company we could not read, and the
-# levels below - the class of its reason, its distance - are the ones
-# that should place it.
-MODE_RANK = {
-    "made_to_order": 0, "mixed": 0, "small_batch": 0, "leaning_made_to_order": 0,
-    "unknown": 0,
-    "leaning_serial": 2, "serial": 3,
-}
+# It began as a rank: made-to-order best, unknown in the middle, serial
+# last, on the reasoning that the ICP's first criterion is "zakazkovy,
+# ne seriovy". The middle position went first. Measured on a real gate,
+# 14 of 31 companies had not a single harvested page and 12 of those
+# were `unknown` for that reason alone; the mode rank correlated -0.53
+# with the page count, so it was ranking whether the crawler had managed
+# to open the site, not how the company produces.
+#
+# The rest of it went for a better reason: the verdict is not solid
+# enough to move anybody. It is read out of website prose and job ads,
+# and CLAUDE.md's own record of checking it by hand is 0 clean answers
+# out of 3 companies - Robex says "na zakazku" and keeps a catalogue,
+# Laub says "kusova i seriova" on one page, Jaro says nothing. The ICP
+# itself marks the criterion "vyvod, ne fakt": no register carries it.
+# Ordering on a marketing sentence is exactly the kind of confident
+# wrongness this pipeline is supposed to refuse.
+#
+# Measured before removing it: of 24 qualified companies the mode
+# demoted zero - 17 unknown, 6 made-to-order, 1 mixed. It was already
+# doing nothing; what it kept was the ability to sink a company one day
+# on a sentence written by a marketing agency.
+#
+# So the mode stays on the card, where a salesperson reads it as
+# context with its basis stated, and stays out of the sort key. What
+# remains in FIT is the NACE tier, which comes from the register rather
+# than from scraped prose and is what caught a construction firm with a
+# rich website (KVAZAR).
+TIER_RANK = {"core": 0, "other": 1, "service": 2}
 
 
 def fit_assessment(archive, company, site_status=None):
@@ -304,8 +316,7 @@ def fit_assessment(archive, company, site_status=None):
             agent_mode = "serial"
         return {
             "nace_tier": tier, "mode": agent_mode, "mode_basis": "agent_fact",
-            "rank": ({"core": 0, "other": 1, "service": 2}[tier],
-                     MODE_RANK.get(agent_mode, 1)),
+            "rank": TIER_RANK[tier],
         }
 
     findings = []
@@ -329,12 +340,9 @@ def fit_assessment(archive, company, site_status=None):
         "nace_tier": tier,
         "mode": verdict["mode"],
         "mode_basis": verdict.get("basis"),
-        # The sort key: NACE tier first, production mode second. FIT
-        # orders the groups, PAIN orders inside them - the two-stage
-        # shape the selection was always meant to have, now actually
-        # wired to evidence.
-        "rank": ({"core": 0, "other": 1, "service": 2}[tier],
-                 MODE_RANK.get(verdict["mode"], 1)),
+        # The NACE tier alone - see the note above MODE_RANK's remains
+        # for why the production mode is carried and not ranked on.
+        "rank": TIER_RANK[tier],
     }
 
 
@@ -613,6 +621,55 @@ def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events,
     }
 
 
+def group_key(row):
+    """(owner, date) when this company's reason is a group-level event.
+
+    Only an ownership change where the owner is a COMPANY counts. ARES
+    states that in `is_legal_entity` and signals/now.py carries it onto
+    the event, so this is a register fact rather than a guess at whether
+    a name looks like a firm.
+    """
+    for event in row["now_events"]:
+        if event["kind"].startswith("owner_") and event.get("legal_entity"):
+            return ((event.get("name") or "").strip().lower(), event["date"])
+    return None
+
+
+def collapse_groups(rows):
+    """One holding reorganisation is one phone call, not three cards.
+
+    Found in a live ranking: RUML Industry, RUML Service and RUML
+    Těsnění all had "RUML Holding s.r.o. became the owner" dated
+    2026-08-25, and three of the week's ten were the same event at three
+    subsidiaries. A salesperson makes one call there, and probably to
+    the holding rather than to each plant.
+
+    The best-ranked member is kept and carries the others on its card;
+    the rest are marked and stay in the ranking, so nothing disappears
+    silently and a human can still see the whole group. Rows are assumed
+    to arrive in order, so "best" is simply the first one seen.
+
+    Deliberately narrow: only companies whose REASON is the same group
+    event are collapsed. Two subsidiaries that each hired a planner in
+    the same week are two facts about two companies, and merging them on
+    a shared owner would be inventing a connection the events do not
+    have.
+    """
+    leaders, kept = {}, []
+    for row in rows:
+        key = group_key(row)
+        if key and key in leaders:
+            leader = leaders[key]
+            leader.setdefault("group_siblings", []).append(
+                {"ico": row["ico"], "name": row.get("name")})
+            row["suppressed_by"] = leader["ico"]
+            continue
+        if key:
+            leaders[key] = row
+        kept.append(row)
+    return kept
+
+
 def undeliverable(site, contact):
     """Why this company must not be handed over, if it must not. Not a score.
 
@@ -647,10 +704,11 @@ def undeliverable(site, contact):
 def ordering(row):
     """The sort key. Six steps, each traceable to the brief or to a measurement.
 
-    1. FIT group - industry tier, then production mode. Put anything
-       else first and a construction firm with a subsidy outranks a
+    1. FIT group - the NACE tier, and nothing else. Put anything else
+       first and a construction firm with a subsidy outranks a
        manufacturer from the core of the ICP; that exact case reached a
-       card once already (KVAZAR).
+       card once already (KVAZAR). The production mode is deliberately
+       NOT here - see TIER_RANK's note.
     2. A deprioritising negative finding. "Every establishment closed"
        is about whether the company can buy at all, so it outweighs
        every reason below it. This is where filters/negative.py's third
@@ -757,6 +815,12 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
               f"held back: " + ", ".join(f"{count}× {reason}"
                                          for reason, count in held.most_common()),
               file=sys.stderr)
+
+    before = len(deliverable)
+    deliverable = collapse_groups(deliverable)
+    if len(deliverable) < before:
+        print(f"{before - len(deliverable)} folded into a company of the same group "
+              f"with the same event", file=sys.stderr)
 
     return deliverable[:top], ranked
 

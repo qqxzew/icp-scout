@@ -143,6 +143,11 @@ def registry_events(company, window_days, today=None):
                 "date": event_date.isoformat(),
                 "name": person.get("name"),
                 "role": person.get("role"),
+                # Whether the owner is a company rather than a person.
+                # ARES states it and the event used to drop it, which is
+                # what let one holding reorganisation look like three
+                # unrelated leads - see scoring/select.py::group_key.
+                "legal_entity": bool(person.get("is_legal_entity")),
                 "age_days": (today - event_date).days,
             })
     return events

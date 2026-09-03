@@ -636,6 +636,15 @@ def render(card):
             bits.append(f"{card['rank']}. z {card.get('of_qualified', '?')} kvalifikovaných")
         out.append(row("Pořadí", " · ".join(bits)))
 
+    # The same event at other companies of the same group. Printed
+    # because it changes the call rather than decorating it: one owner
+    # took over three subsidiaries on one day, and the conversation is
+    # with the owner, not three times with the plants.
+    siblings = card.get("group_siblings") or []
+    if siblings:
+        names = " · ".join((s.get("name") or s["ico"])[:28] for s in siblings)
+        out.append(row("Táž událost ve skupině", f"{len(siblings)} další firmy: {names}"))
+
     if card["why_now"]:
         for event in card["why_now"]:
             # The value is already a Czech sentence - signals/now.py's

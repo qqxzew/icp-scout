@@ -695,6 +695,9 @@ def stage_cards(archive, run_id, ranked, top, fetch_turnover=True, icp=None,
         # rather than recomputed, so the card cannot describe a different
         # ordering from the one that actually chose it.
         card["reason"] = row["reason"]
+        # Other companies of the same group whose reason is this same
+        # event - one call, not three (select.collapse_groups).
+        card["group_siblings"] = row.get("group_siblings")
         card["rank"] = ranked.index(row) + 1
         card["of_qualified"] = qualified_count if qualified_count is not None else len(ranked)
         cards.append(card)
