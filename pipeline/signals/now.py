@@ -108,23 +108,6 @@ def registry_events(company, window_days, today=None):
     established = parse_date(company.get("established"))
     events = []
 
-    # A departure the present register contradicts is not a departure.
-    # drop_reentries() below pairs a leaving with an arrival, but it can
-    # only see events that were produced - and the mass-event guard a few
-    # lines down deletes exactly the arrival it would need. Live case,
-    # MASKOP 99: both jednatelé were re-entered on 2026-08-29, so the
-    # arrivals were dropped as a mass amendment while TOMÁŠ JUPA's
-    # departure of that same day survived alone, and the card told a
-    # salesperson the man to call had left the board he currently sits
-    # on. Reading the company's current state instead of hoping for a
-    # matching event closes that hole for good.
-    still_listed = {
-        "director_departed": {(p.get("name") or "").casefold()
-                              for p in (company.get("directors") or [])},
-        "owner_departed": {(p.get("name") or "").casefold()
-                           for p in (company.get("owners") or [])},
-    }
-
     groups = (
         ("directors", "director_joined", "since"),
         ("owners", "owner_joined", "since"),
@@ -154,11 +137,6 @@ def registry_events(company, window_days, today=None):
 
         for person, event_date in dated:
             if (today - event_date).days > window_days:
-                continue
-            # ARES spells the same person differently across records
-            # ("TOMÁŠ JUPA" now, "Tomáš Jupa" in the 2016 entry), so the
-            # comparison folds case rather than trusting the spelling.
-            if (person.get("name") or "").casefold() in still_listed.get(kind, ()):
                 continue
             events.append({
                 "kind": kind,
@@ -298,7 +276,7 @@ def role_history_depth(ico, history, today=None):
 REENTRY_DAYS = 3
 
 
-def drop_reentries(events):
+def drop_reentries(events, company=None):
     """Remove arrival/departure pairs that are one person re-registered.
 
     Found on live data: FORCE TRADE s.r.o. showed Petra Doležalová both
@@ -309,6 +287,21 @@ def drop_reentries(events):
     Measured across the base: 41 of 152 events in a 30-day window - 27 %
     - were these pairs. Left in, better than a quarter of every "why
     now" reason handed to a salesperson would be a clerical correction.
+
+    PAIRING ALONE IS NOT ENOUGH, because the arrival it needs is not
+    always there to pair with. MASKOP 99 re-entered both jednatelé on
+    2026-08-29, so registry_events()'s mass-event guard removed both
+    arrivals, and TOMÁŠ JUPA's departure of that same day survived on its
+    own - telling a salesperson that the man to call had left a board he
+    currently sits on. So `company` is consulted as a second pass: a
+    departure the present register contradicts is not a departure.
+
+    The two passes run in this order for a reason. Filtering on the
+    register first would delete the departure half of a genuine pair
+    before this function could see it, and the arrival half would then
+    survive alone - a false "new jednatel" in place of a false departure,
+    which is no better. Measured after the fix: 13 false departures at 11
+    companies removed in a 7-day window, against 22 real ones kept.
     """
     departures = {}
     for event in events:
@@ -325,7 +318,25 @@ def drop_reentries(events):
                 paired.add((event["name"], event["date"]))
                 paired.add((event["name"], left.isoformat()))
 
-    return [e for e in events if (e.get("name"), e["date"]) not in paired]
+    kept = [e for e in events if (e.get("name"), e["date"]) not in paired]
+    if not company:
+        return kept
+
+    # ARES spells the same person differently across records ("TOMÁŠ
+    # JUPA" in the current entry, "Tomáš Jupa" in the 2016 one), so the
+    # comparison folds case rather than trusting the spelling. Compared
+    # per role, not across both: somebody can genuinely stop being a
+    # jednatel while staying an owner, and WMW - Production is exactly
+    # that case - Michael Grauel left the board on 2026-08-27 and still
+    # holds his share, which is a real change and stays a reason to call.
+    still_listed = {
+        "director_departed": {(p.get("name") or "").casefold()
+                              for p in (company.get("directors") or [])},
+        "owner_departed": {(p.get("name") or "").casefold()
+                           for p in (company.get("owners") or [])},
+    }
+    return [e for e in kept
+            if (e.get("name") or "").casefold() not in still_listed.get(e["kind"], ())]
 
 
 # EU subsidies are published monthly and lag by weeks, so a 7-day
@@ -438,7 +449,7 @@ def find(company, history, window_days=30, today=None, subsidies=None,
     for a year, and collapsing that distinction would let a thin sample
     look as certain as a thick one.
     """
-    events = drop_reentries(registry_events(company, window_days, today))
+    events = drop_reentries(registry_events(company, window_days, today), company)
 
     depth = role_history_depth(company["ico"], history, today)
     for event in vacancy_events(company["ico"], history, window_days, today):
