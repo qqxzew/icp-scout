@@ -46,6 +46,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote as urlquote
 
 from pipeline.evidence.archive import Archive
 from pipeline.evidence.verify import counts_as_evidence, usable
@@ -142,6 +143,47 @@ def source_label(row):
     if row["url"]:
         return row["url"]
     return SOURCE_NAMES.get(row["source"], row["source"] or "—")
+
+
+# Chrome/Edge/Opera implement the Text Fragments spec (#:~:text=...): a
+# link that both scrolls to and highlights the cited passage, on any page,
+# with no cooperation needed from the site. Safari and Firefox ignore the
+# suffix and just open the page - safe degradation, not a broken link.
+#
+# Measured live on maskop99.cz while wiring this up: a short, single-node
+# anchor (one e-mail address) matched reliably; a longer synthetic span
+# built to cross several block-level elements (a contact card's name,
+# role, e-mail and phone, each its own line) did not, because the
+# fragment matcher only collapses whitespace confidently within one
+# block, not across several with unpredictable markup between them. A
+# verified pain-evidence quote is normally lifted from one paragraph of
+# prose, so it does not hit this - but it can still be long, and a very
+# long text= value both risks a similar cross-node failure and makes an
+# unwieldy URL. So: short quotes are passed whole; long ones are trimmed
+# to their first and last few words, which the spec's start,end form
+# matches as "the passage beginning here and ending there" - long enough
+# to be unambiguous, short enough to usually stay inside one block.
+WORD_THRESHOLD = 12
+EDGE_WORDS = 6
+
+
+def fragment_url(url, quote):
+    """A link that jumps straight to the cited passage, where a browser supports it.
+
+    Falls back to the bare url when there is nothing to anchor on - no
+    url, or no quote (an inference has none by construction; see
+    evidence/verify.py). Never guesses a passage that was not actually
+    verified: the quote this takes is always one that already survived
+    the archive check, so the link can only point at real, checked text.
+    """
+    if not url or not quote:
+        return url
+    words = quote.split()
+    if len(words) <= WORD_THRESHOLD:
+        return f"{url}#:~:text={urlquote(quote, safe='')}"
+    start = " ".join(words[:EDGE_WORDS])
+    end = " ".join(words[-EDGE_WORDS:])
+    return f"{url}#:~:text={urlquote(start, safe='')},{urlquote(end, safe='')}"
 
 
 def turnover_from_site(archive, ico):
@@ -306,7 +348,8 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
     # every company: who is legally allowed to sign. Names are present
     # for 99.9 % of the base, a channel for far fewer, so the empty cell
     # belongs in the channel column, not in place of the row.
-    by_name = {p.get("name"): p for p in ((contacts.get(ico) or {}).get("people") or [])}
+    contacts_row = contacts.get(ico) or {}
+    by_name = {p.get("name"): p for p in (contacts_row.get("people") or [])}
     people = []
     for director in company.get("directors") or []:
         found = by_name.get(director.get("name")) or {}
@@ -318,6 +361,13 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
             "phone": found.get("phone"),
             "quote": found.get("quote"),
             "source": "web" if (found.get("email") or found.get("phone")) else None,
+            # The page this channel was read from - contacts.py harvests
+            # one team/contact page per company, so every person on it
+            # shares the same source_url. Carried per-person rather than
+            # read off the card's top level because a card with no
+            # directors should not force a caller to fall back to
+            # somewhere else for it.
+            "page_url": contacts_row.get("source_url"),
         })
 
     tender_people = tender_contacts(ico, tenders)
@@ -372,6 +422,10 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
 
 
 ARES_REST = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest"
+# The same endpoint sources/coords.py queries for RUIAN coordinates -
+# named here only for the card's own "where did this come from" link, so
+# a distance line points at something rather than a bare label.
+RUIAN_URL = "https://ags.cuzk.gov.cz/arcgis/rest/services/RUIAN/MapServer/1/query"
 
 LABEL = 22          # width of the label column
 VALUE = 66          # width of the value column before the source
@@ -455,6 +509,31 @@ def row(label, value, source="", state="fact"):
     return f"  {label:<{LABEL}}{text:<{VALUE}}{source}"
 
 
+# Mode label and its basis, kept apart rather than pre-joined: render()
+# wants them as one string ("zakázková (přímé tvrzení)"), for_web() wants
+# them as separate fields (a value and a note), and a dict of ready-made
+# sentences cannot serve the second shape without being re-split.
+MODE_CZ = {
+    "made_to_order": ("zakázková", "přímé tvrzení"),
+    "mixed": ("zakázková i sériová", "přímá tvrzení"),
+    "small_batch": ("malosériová", "přímé tvrzení"),
+    "leaning_made_to_order": ("spíše zakázková", "nepřímé stopy"),
+    "leaning_serial": ("spíše sériová", "nepřímé stopy"),
+    "serial": ("sériová", "přímé tvrzení"),
+    "unknown": ("", ""),
+}
+
+# What each tier of tender contact means, in words a salesperson reads
+# where the name is - not in a margin they might miss. Two of every three
+# measured were the consultancy administering the paperwork rather than
+# the company, so this is the warning that matters most on the card.
+TIER_NOTE = {
+    "register": "jednatel z rejstříku",
+    "company":  "zaměstnanec firmy",
+    "external": "administrátor zakázky, ne firma",
+}
+
+
 def distance_note(geo):
     """"185 km (výchozí bod Plzeň)" - and, when it is too far, that too.
 
@@ -509,14 +588,8 @@ def render(card):
     # assumed - and the row that was missing when a construction firm
     # reached a card with nothing saying so.
     fit = card.get("fit") or {}
-    MODE_CZ = {"made_to_order": "zakázková (přímé tvrzení)",
-               "mixed": "zakázková i sériová (přímá tvrzení)",
-               "small_batch": "malosériová (přímé tvrzení)",
-               "leaning_made_to_order": "spíše zakázková (nepřímé stopy)",
-               "leaning_serial": "spíše sériová (nepřímé stopy)",
-               "serial": "sériová (přímé tvrzení)",
-               "unknown": ""}
-    mode_note = MODE_CZ.get(fit.get("mode"), "")
+    mode_label, mode_basis = MODE_CZ.get(fit.get("mode"), ("", ""))
+    mode_note = f"{mode_label} ({mode_basis})" if mode_label else ""
     tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
                  if fit.get("nace_tier") == "service" else "")
     joined = " · ".join(x for x in (mode_note, tier_note) if x)
@@ -591,11 +664,6 @@ def render(card):
     # Labels stay short enough for the column, and the tier is said in
     # the value instead - "administrátor zakázky" is the warning that
     # matters and it belongs where the name is, not in the margin.
-    TIER_NOTE = {
-        "register": "jednatel z rejstříku",
-        "company":  "zaměstnanec firmy",
-        "external": "administrátor zakázky, ne firma",
-    }
     for contact in card.get("tender_contacts") or []:
         channel = " · ".join(x for x in (contact.get("email"), contact.get("phone")) if x)
         note = TIER_NOTE.get(contact["tier"], contact["tier"])
@@ -687,6 +755,191 @@ def render(card):
     return "\n".join(out)
 
 
+def for_web(card):
+    """Card data as rows a browser can walk, instead of an ASCII table.
+
+    Same content, same order, same decisions as render() - the Czech
+    labels (label_for), the mode phrasing (MODE_CZ), which quotes are
+    worth showing at all - so a web view and the terminal one can never
+    quietly drift apart on what a company's card actually says. The one
+    thing this adds that render() has no use for is fragment_url(): every
+    row that carries a verified quote gets a link built to jump straight
+    to it, computed once here rather than reinvented per company by
+    whoever writes the page that renders this.
+
+    Every row is a dict with at least `label`, `value`, `source`. A row
+    with nothing to link to carries `source: None` rather than being
+    left out - a missing source is itself something a reader should see,
+    not silently lose.
+    """
+    ico = card["ico"]
+    ares = f"{ARES_REST}/ekonomicke-subjekty/{ico}"
+    ares_res = f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"
+    ares_vr = f"{ARES_REST}/ekonomicke-subjekty-vr/{ico}"
+    site_domain = card["website"].get("domain")
+    site_url = f"https://{site_domain}" if site_domain else None
+
+    rows = [
+        {"label": "Sídlo",
+         "value": " · ".join(x for x in (card.get("city"), card.get("district"),
+                                          card.get("region")) if x),
+         "source": ares},
+        {"label": "Vzdálenost", "value": distance_note(card.get("geography")),
+         "source": RUIAN_URL},
+        {"label": "Velikost", "value": card.get("size"), "source": ares_res},
+        {"label": "NACE", "value": card.get("nace"), "source": ares_res},
+    ]
+
+    fit = card.get("fit") or {}
+    mode_label, mode_basis = MODE_CZ.get(fit.get("mode"), ("", ""))
+    tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
+                 if fit.get("nace_tier") == "service" else "")
+    rows.append({
+        "label": "Režim výroby", "value": mode_label,
+        "note": " · ".join(x for x in (mode_basis, tier_note) if x) or None,
+        "source": site_url,
+    })
+
+    for finding in card.get("negative") or []:
+        rows.append({
+            "label": "Riziko",
+            "value": f"{finding['reason']} ({finding['field']}: {finding['value']})",
+            "source": ares, "risk": True,
+        })
+
+    t = card["turnover"]
+    if t["value_czk"]:
+        rows.append({
+            "label": "Obrat (závěrka)",
+            "value": f"{t['value_czk']:,}".replace(",", " ") + " Kč",
+            "note": f"{t['year']}, z účetní závěrky" if t.get("year") else None,
+            "source": t.get("source_url"),
+        })
+    else:
+        rows.append({"label": "Obrat (závěrka)", "value": None,
+                      "empty_note": t.get("note"), "source": t.get("source_url")})
+
+    for site_turnover in card.get("turnover_site") or []:
+        rows.append({
+            "label": "Obrat (web)", "value": site_turnover["value"],
+            "source": fragment_url(site_turnover["url"], site_turnover.get("quote")),
+            "state": site_turnover.get("state", "fact"),
+            "quote": site_turnover.get("quote"),
+        })
+
+    rows.append({"label": "Web", "value": site_domain,
+                 "pill": card["website"].get("status"), "source": site_url})
+
+    certs = [c for c in card["certificates"] if c.get("standard")]
+    if certs:
+        for c in certs:
+            bits = [c["standard"]]
+            if c.get("number"):
+                bits.append(f"č. {c['number']}")
+            if c.get("issuer"):
+                bits.append(f"vydal {c['issuer']}")
+            rows.append({"label": "Certifikát", "value": " · ".join(bits),
+                         "source": c.get("source_url")})
+    else:
+        rows.append({"label": "Certifikát", "value": None, "source": None})
+
+    contact_rows = []
+    for person in card["contacts"]:
+        role = person.get("role_registered") or ""
+        since = f", od {person['since']}" if person.get("since") else ""
+        contact_rows.append({
+            "label": "Jednatel",
+            "value": f"{person.get('name')} · {role}{since}".strip(" ·"),
+            "source": ares_vr,
+        })
+        # Anchored on the channel value itself (an e-mail or a phone
+        # number), not on the surrounding prose quote: measured live, a
+        # contact card's name/role/e-mail/phone sit in separate
+        # block-level elements, and a fragment spanning several of them
+        # did not match, while the short single-token value did. That
+        # holds for any company's team page, not just this one.
+        channel = person.get("email") or person.get("phone")
+        contact_rows.append({
+            "label": "kanál z webu", "sub": True, "value": channel,
+            "source": fragment_url(person.get("page_url"), channel) if channel else None,
+        })
+    if not contact_rows:
+        contact_rows.append({"label": "Jednatel", "value": None, "source": ares_vr})
+
+    for contact in card.get("tender_contacts") or []:
+        channel = " · ".join(x for x in (contact.get("email"), contact.get("phone")) if x)
+        note = TIER_NOTE.get(contact["tier"], contact["tier"])
+        contact_rows.append({
+            "label": "Kontakt ze zakázky",
+            "value": f"{contact['name']} ({note}) — {channel}".strip(" —"),
+            "source": contact.get("url"),
+        })
+
+    # No note field here on purpose, matching render(): `seen_at` is when
+    # the claim was archived, not the event's own date, and the two can
+    # differ - showing it as if it answered "when" would be exactly the
+    # kind of confident-looking wrong thing this project's evidence layer
+    # exists to prevent. The event's own date, when signals/now.py has
+    # one, is already worded into `value`.
+    why_now_rows = [
+        {"label": "Proč teď", "value": event["value"], "source": event.get("url")}
+        for event in card["why_now"]
+    ] or [{"label": "Proč teď", "value": None, "source": None}]
+
+    tender_rows = []
+    for tender in card.get("tenders") or []:
+        published = tender.get("published") or ""
+        deadline = parse_tender_deadline(tender.get("deadline"))
+        if tender.get("status") in ("Neukončen", "Plánován"):
+            state = "otevřená" if deadline and deadline >= date.today() else "po uzávěrce"
+        else:
+            state = tender.get("status")
+        tender_rows.append({
+            "label": "Zakázka",
+            "value": f"[{state}] {tender.get('name', '')}"
+                     + (f" · {published[:10]}" if published else ""),
+            "source": tender.get("url"),
+        })
+        if tender.get("cpv"):
+            tender_rows.append({
+                "label": "CPV", "sub": True,
+                "value": f"{tender['cpv']} {tender.get('cpv_name', '')}",
+                "source": tender.get("url"),
+            })
+
+    claims = []
+    for fact in card["evidence"]["facts"]:
+        if fact["kind"].startswith(("certificate:", "turnover_web")):
+            continue                      # already carried in their own rows above
+        claims.append({
+            "badge": "fakt", "label": label_for(fact["kind"]), "value": fact["value"],
+            "quote": fact["quote"], "source": fragment_url(fact["url"], fact["quote"]),
+        })
+    for guess in card["evidence"]["inferences"]:
+        claims.append({
+            "badge": "~ úsudek", "label": label_for(guess["kind"]), "value": guess["value"],
+            "quote": guess["quote"], "source": fragment_url(guess["url"], guess["quote"]),
+        })
+
+    facts_n, guesses_n = len(card["evidence"]["facts"]), len(card["evidence"]["inferences"])
+    footer = {
+        "facts": facts_n,
+        "facts_label": plural(facts_n, "ověřený fakt", "ověřené fakty", "ověřených faktů"),
+        "inferences": guesses_n,
+        "inferences_label": plural(guesses_n, "úsudek", "úsudky", "úsudků"),
+        "discarded": card["discarded"], "discounted": card.get("discounted", 0),
+    }
+
+    sections = [{"title": "Kontakty", "rows": contact_rows},
+                {"title": "Proč teď", "rows": why_now_rows}]
+    if tender_rows:
+        sections.append({"title": "Zakázky", "rows": tender_rows})
+    sections.append({"title": "Doklady bolesti", "claims": claims})
+
+    return {"ico": ico, "name": card.get("name"), "rows": rows,
+            "sections": sections, "footer": footer}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the salesperson's dossier.")
     parser.add_argument("ico", nargs="*")
@@ -694,6 +947,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-fetch", action="store_true",
                         help="use cached turnover only, never call justice.cz")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--web", action="store_true",
+                        help="print for_web() shape instead of build()'s raw dict")
     args = parser.parse_args()
 
     archive = Archive()
@@ -714,12 +969,12 @@ if __name__ == "__main__":
     for ico in icos:
         card = build(ico, archive, companies, websites, contacts,
                      turnover_cache, fetch_turnover=not args.no_fetch)
-        cards.append(card)
-        if not args.json:
+        cards.append(for_web(card) if args.web else card)
+        if not args.json and not args.web:
             print(render(card))
             print()
 
-    if args.json:
+    if args.json or args.web:
         print(json.dumps(cards, ensure_ascii=False, indent=2))
 
     archive.close()

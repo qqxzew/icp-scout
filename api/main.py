@@ -24,6 +24,11 @@ from pydantic import BaseModel, Field
 
 from pipeline.evidence.archive import Archive
 from pipeline.run import default_icp, with_defaults
+from pipeline.scoring.card import build as build_card
+from pipeline.scoring.card import for_web as card_for_web
+from pipeline.scoring.card import load_turnover_cache
+from pipeline.scoring.select import CONTACTS, WEBSITES, load_jsonl
+from pipeline.signals.now import ARES_CANDIDATES, load_companies
 from pipeline.sources.res_bulk import ICP_FORMA
 
 
@@ -40,6 +45,16 @@ ARCHIVE = Archive(
 	db_path=PROJECT_ROOT / "data" / "archive.db",
 	snapshot_dir=PROJECT_ROOT / "data" / "snapshots",
 )
+
+# Loaded once at startup rather than per request - the same call
+# select.py's own CLI makes, and re-reading a 9800-row candidate file and
+# two jsonl caches on every card click would make the one interactive
+# screen in this prototype the slow one. Turnover is the exception: its
+# cache is read fresh per request (cheap, one small file) since card.py
+# itself appends to it as new companies get looked up.
+COMPANIES = {c["ico"]: c for c in load_companies(ARES_CANDIDATES)}
+WEBSITES_CACHE = load_jsonl(WEBSITES)
+CONTACTS_CACHE = load_jsonl(CONTACTS)
 
 app = FastAPI()
 
@@ -166,6 +181,24 @@ def get_results():
 	if not RESULTS_PATH.is_file():
 		raise HTTPException(status_code=404, detail="No completed run found")
 	return FileResponse(RESULTS_PATH, media_type="application/json")
+
+
+@app.get("/api/card/{ico}")
+def get_card(ico: str):
+	"""One company's dossier, in the shape web/card/ renders.
+
+	fetch_turnover=False: sbirka.py is four sequential requests to
+	justice.cz, and this endpoint is called from a page a person is
+	looking at, not a batch run - a cache miss must not make the click
+	hang. Enrichment happens at stage 06 of a real run (card.py --top),
+	which fills the same cache this reads.
+	"""
+	ico = ico.strip().zfill(8)
+	if ico not in COMPANIES:
+		raise HTTPException(status_code=404, detail="IČO není v seznamu kandidátů")
+	card = build_card(ico, ARCHIVE, COMPANIES, WEBSITES_CACHE, CONTACTS_CACHE,
+	                   turnover_cache=load_turnover_cache(), fetch_turnover=False)
+	return card_for_web(card)
 
 
 # Mounted last, and only after every /api route above: a mount on "/"
