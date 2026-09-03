@@ -47,9 +47,13 @@
 
 /* rows ----------------------------------------------------------------- */
 
+/* Rows are top-aligned rather than centred because a value may now run
+   to two or three lines: a decoded NACE name and a model's sentence are
+   both longer than the column. Truncating them was worse than wrapping -
+   the classification the row exists to state was the part being cut. */
 .dossier-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
   padding: 7px 4px;
   border-radius: 8px;
@@ -63,7 +67,7 @@
   min-width: 0;
   color: var(--ink-dim);
   font-size: 12.5px;
-  line-height: 1.4;
+  line-height: 1.55;
 }
 
 .dossier-main {
@@ -71,9 +75,8 @@
   min-width: 0;
   color: var(--ink);
   font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .dossier-note {
@@ -104,13 +107,16 @@
 
 /* source link -- right side, vertically centered on its row ------------ */
 
+/* Pinned to the first line, not to the middle of a wrapped value: on a
+   three-line row a vertically centred icon drifts away from the row it
+   belongs to and reads as if it referred to the line beside it. */
 .dossier-source {
   flex: none;
   width: 26px;
   height: 26px;
+  margin-top: -3px;
   display: grid;
   place-items: center;
-  align-self: center;
   border: 0;
   border-radius: 6px;
   color: var(--ink-faint);
@@ -173,20 +179,19 @@
 
 .dossier-claim { padding: 1px 0; }
 
-.dossier-badge {
-  display: inline-block;
-  padding: 2px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  white-space: nowrap;
+/* What the model concluded, as opposed to what a register states or a
+   quote proves. Faint on purpose: it has to be findable when scanning
+   the card and invisible when reading a sentence, so it is a wash behind
+   the words rather than a badge beside them. The negative margin keeps
+   the tinted box from shifting the text it sits under. */
+.dossier-mark {
+  background: rgba(214, 184, 96, 0.10);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin: 0 -2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
-
-.dossier-badge--fact { color: #9bb98a; border-color: #2b3a25; }
-.dossier-badge--inference { color: var(--warn); border-color: #3a2c1c; }
 
 .dossier-quote {
   margin: 0 0 9px 144px;

@@ -53,7 +53,7 @@ function buildRow(row) {
 
   const main = el("span", "dossier-main");
   if (row.value) {
-    main.appendChild(document.createTextNode(row.value));
+    main.appendChild(valueText(row));
     if (row.note) {
       const note = el("span", "dossier-note", row.note);
       main.appendChild(note);
@@ -72,17 +72,32 @@ function buildRow(row) {
   return wrap;
 }
 
+// The value itself, tinted when the pipeline flagged it as the model's
+// reading rather than something a register states or a quote proves.
+// The tint sits on the text, not on the row, so it reads as a marker pen
+// over the words in question and not as a highlighted line. The reason is
+// carried in `title` - `inferred_note` is written per case in card.py,
+// because "no register carries this" and "no verbatim quote backs this"
+// are different admissions and should not collapse into one tooltip.
+function valueText(item) {
+  if (!item.inferred) return document.createTextNode(item.value);
+  const mark = el("span", "dossier-mark", item.value);
+  if (item.inferred_note) mark.title = item.inferred_note;
+  return mark;
+}
+
 function buildClaim(claim) {
   const wrap = el("div", "dossier-claim");
   const row = el("div", "dossier-row");
 
-  const labelSlot = el("span", "dossier-label");
-  const isFact = claim.badge === "fakt";
-  const badge = el("span", `dossier-badge ${isFact ? "dossier-badge--fact" : "dossier-badge--inference"}`, claim.badge);
-  labelSlot.appendChild(badge);
-  row.appendChild(labelSlot);
+  // The claim's Czech label goes in the label column like every other
+  // row's does, now that no badge is competing for that slot - so the
+  // evidence lines up with the registry lines above it instead of
+  // starting at its own indent.
+  row.appendChild(el("span", "dossier-label", claim.label));
 
-  const main = el("span", "dossier-main", `${claim.label} — ${claim.value}`);
+  const main = el("span", "dossier-main");
+  main.appendChild(valueText(claim));
   row.appendChild(main);
   row.appendChild(sourceLink(claim.source, claim.label));
   wrap.appendChild(row);

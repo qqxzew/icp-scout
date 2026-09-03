@@ -186,6 +186,40 @@ def fragment_url(url, quote):
     return f"{url}#:~:text={urlquote(start, safe='')},{urlquote(end, safe='')}"
 
 
+NACE_CODEBOOK = Path("data/raw/nace_codebook.csv")
+_NACE_NAMES = None
+
+
+def nace_name(code, path=NACE_CODEBOOK):
+    """"16230" -> "Výroba ostatních výrobků stavebního truhlářství...".
+
+    A five-digit number tells a salesperson nothing, and the whole card
+    is written to be read rather than decoded. The names come from the
+    official ČSÚ classification already on disk (the same file the ICP
+    screens are built from), so this is a lookup, not a guess.
+
+    An unknown code is returned as it stands. That is the same rule
+    label_for() follows: a code missing from the codebook is a gap in the
+    data, and printing it plainly leaves it visible instead of hiding the
+    row or inventing a name for it.
+    """
+    global _NACE_NAMES
+    if not code:
+        return code
+    if _NACE_NAMES is None:
+        _NACE_NAMES = {}
+        if Path(path).exists():
+            import csv
+            # utf-8-sig: the ČSÚ export carries a BOM, and without this
+            # the very first column name arrives with it glued on.
+            with open(path, encoding="utf-8-sig", newline="") as handle:
+                for entry in csv.DictReader(handle):
+                    value, text = entry.get("CHODNOTA"), entry.get("TEXT")
+                    if value and text:
+                        _NACE_NAMES[value] = text
+    return _NACE_NAMES.get(str(code), code)
+
+
 def turnover_from_site(archive, ico):
     """Turnover the company states on its own website, if any.
 
@@ -265,6 +299,25 @@ def certificates_for(ico, cache_path=Path("data/raw/certificates.jsonl")):
     return []
 
 
+def contradicted_by_register(event, company):
+    """True when an archived departure claim is about somebody still in office.
+
+    The claim's name is not a field - signals/now.py::describe() writes a
+    Czech sentence that begins with it ("TOMÁŠ JUPA — opustil statutární
+    orgán") - so the test asks the other way round: does any currently
+    registered name appear in the sentence? That direction needs no
+    parsing of free text and cannot invent a match, because the names it
+    compares both come from the register.
+    """
+    kind = event.get("kind") or ""
+    field = {"director_departed": "directors", "owner_departed": "owners"}.get(kind)
+    if not field:
+        return False
+    value = (event.get("value") or "").casefold()
+    return any((person.get("name") or "").casefold() in value
+               for person in (company.get(field) or []) if person.get("name"))
+
+
 def build(ico, archive, companies=None, websites=None, contacts=None,
           turnover_cache=None, fetch_turnover=True, tenders=None, icp=None):
     """Everything known about one company, grouped the way it is read."""
@@ -318,6 +371,14 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
          "url": row["url"], "seen_at": row["fetched_at"]}
         for row in claims if row["kind"].startswith("now:")
     ]
+    # signals/now.py no longer produces a departure the present register
+    # contradicts, but the archive is append-only by design: a claim
+    # written before that fix stays a record of what was believed then,
+    # and would otherwise keep telling a salesperson that the jednatel
+    # they are about to call has left. The claim keeps its place in the
+    # archive; it just stops being read as a reason to call.
+    now_events = [event for event in now_events
+                  if not contradicted_by_register(event, company)]
 
     # Tenders arrive through the claim table like every other NOW event -
     # nen.py archives the tender page, so the claim points at a snapshot
@@ -581,7 +642,8 @@ def render(card):
                                             card.get("region")) if x), ares),
         row("Vzdálenost", distance_note(card.get("geography")), "RÚIAN"),
         row("Velikost", card.get("size"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
-        row("NACE", card.get("nace"), f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
+        row("NACE", nace_name(card.get("nace")),
+            f"{ARES_REST}/ekonomicke-subjekty-res/{ico}"),
     ]
 
     # The ICP's first criterion, answered from evidence rather than
@@ -787,16 +849,29 @@ def for_web(card):
         {"label": "Vzdálenost", "value": distance_note(card.get("geography")),
          "source": RUIAN_URL},
         {"label": "Velikost", "value": card.get("size"), "source": ares_res},
-        {"label": "NACE", "value": card.get("nace"), "source": ares_res},
+        # The classification spelled out, with the code kept as the small
+        # note: the sentence is what a person reads, the number is what
+        # they check against the ARES field the link opens.
+        {"label": "NACE", "value": nace_name(card.get("nace")),
+         "note": card.get("nace") if nace_name(card.get("nace")) != card.get("nace") else None,
+         "source": ares_res},
     ]
 
     fit = card.get("fit") or {}
-    mode_label, mode_basis = MODE_CZ.get(fit.get("mode"), ("", ""))
+    mode_label, _ = MODE_CZ.get(fit.get("mode"), ("", ""))
     tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
                  if fit.get("nace_tier") == "service" else "")
+    # Always marked as the model's reading, never as a register fact - no
+    # register carries the production mode at all, the ICP itself files
+    # the criterion under "vývod, ne fakt", and checking it by hand gave
+    # 0 clean answers out of 3 companies. The basis used to be spelled
+    # out in a note ("přímé tvrzení"); the mark says the same thing
+    # without spending a line on it.
     rows.append({
         "label": "Režim výroby", "value": mode_label,
-        "note": " · ".join(x for x in (mode_basis, tier_note) if x) or None,
+        "note": tier_note or None,
+        "inferred": bool(mode_label),
+        "inferred_note": "úsudek modelu z textu webu — žádný rejstřík režim výroby neuvádí",
         "source": site_url,
     })
 
@@ -823,7 +898,8 @@ def for_web(card):
         rows.append({
             "label": "Obrat (web)", "value": site_turnover["value"],
             "source": fragment_url(site_turnover["url"], site_turnover.get("quote")),
-            "state": site_turnover.get("state", "fact"),
+            "inferred": site_turnover.get("state") != "fact",
+            "inferred_note": "úsudek modelu — bez ověřené citace",
             "quote": site_turnover.get("quote"),
         })
 
@@ -907,18 +983,26 @@ def for_web(card):
                 "source": tender.get("url"),
             })
 
+    # No badge on either kind any more. A fact carries its quote directly
+    # underneath - that is the proof, and it is more convincing than a
+    # label saying "fakt" - while an inference has nothing under it and is
+    # marked instead, so the eye finds the unbacked statements without a
+    # legend to read first.
     claims = []
     for fact in card["evidence"]["facts"]:
         if fact["kind"].startswith(("certificate:", "turnover_web")):
             continue                      # already carried in their own rows above
         claims.append({
-            "badge": "fakt", "label": label_for(fact["kind"]), "value": fact["value"],
+            "label": label_for(fact["kind"]), "value": fact["value"],
             "quote": fact["quote"], "source": fragment_url(fact["url"], fact["quote"]),
+            "inferred": False,
         })
     for guess in card["evidence"]["inferences"]:
         claims.append({
-            "badge": "~ úsudek", "label": label_for(guess["kind"]), "value": guess["value"],
+            "label": label_for(guess["kind"]), "value": guess["value"],
             "quote": guess["quote"], "source": fragment_url(guess["url"], guess["quote"]),
+            "inferred": True,
+            "inferred_note": "úsudek modelu — na stránce k tomu není doslovná citace",
         })
 
     facts_n, guesses_n = len(card["evidence"]["facts"]), len(card["evidence"]["inferences"])

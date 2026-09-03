@@ -8,7 +8,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../style.css">
-<link rel="stylesheet" href="card.css">
+<!-- ?v= is bumped whenever card.css/card.js change: a browser that has
+     already seen this page keeps serving its cached copy otherwise, and
+     the card then renders with the previous version's markup rules. -->
+<link rel="stylesheet" href="card.css?v=2">
 </head>
 <body>
 
@@ -25,6 +28,6 @@
   <div class="dossier" id="dossier"></div>
 </main>
 
-<script src="card.js"></script>
+<script src="card.js?v=2"></script>
 </body>
 </html>
