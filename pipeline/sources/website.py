@@ -662,6 +662,111 @@ def find_city(text, city):
     return fold(city) in fold(text)
 
 
+def fold_aligned(text):
+    """fold(), but every character keeps its position.
+
+    fold() decomposes "á" into a + combining accent and drops the
+    accent, so the folded string is shorter than the original and an
+    offset found in one does not point at the same place in the other.
+    That is fine for a yes/no test and wrong for cutting out a quote -
+    and the quote is the whole point, because it has to be findable
+    again in the archive. Folding each character to its own base letter
+    keeps the two strings the same length.
+    """
+    out = []
+    for char in text:
+        base = unicodedata.normalize("NFD", char)
+        base = "".join(c for c in base if unicodedata.category(c) != "Mn")
+        out.append((base[0] if base else char).lower())
+    return "".join(out)
+
+
+# A company name is what stands in front of a legal form. Used to read
+# whose address is printed, not to find companies - so it only has to
+# recognise the shapes Czech pages actually write, including "a.s"
+# without the closing dot, which is common enough to matter.
+LABELLED = re.compile(
+    r"([^.,;:|•\n]{2,60}?)\s*(?:spol\.\s*s\s*r\.\s*o|s\.\s*r\.\s*o|a\.\s*s|v\.\s*o\.\s*s|"
+    r"k\.\s*s|z\.\s*s|s\.p)\.?", re.I)
+
+
+def find_address(text, street, number, town=None, name=None):
+    """The registered street and house number, adjacent on the page.
+
+    Neither half works alone: a street name is shared by every town in
+    the country and the town is shared by everyone in it. The pair does
+    not happen by accident, and it survives the case the name test
+    cannot - a company trading under a brand that is not its registered
+    name still prints its own address in the footer.
+
+    Villages have no street; there the house number belongs to the town
+    itself, so the town takes the street's place as the anchor.
+
+    Measured on 300 companies (data/ident_probe.py): fires on 87 of 100
+    sites already proven by their ICO, on 26 of 100 resting on the name
+    alone, and on 4 of 100 where nothing matched at all.
+    """
+    if not number:
+        return None
+    anchor = fold_aligned(str(street or town or ""))
+    if len(anchor) < 3:
+        return None
+
+    folded = fold_aligned(text)
+    for match in re.finditer(re.escape(anchor), folded):
+        # The number has to follow the street closely. "Masarykova" and
+        # a 633 somewhere further down the page are two facts, not an
+        # address; 40 characters covers "Masarykova 633/318, Bukov".
+        window = folded[match.end():match.end() + 40]
+        if not re.search(rf"\b{re.escape(str(number))}\b", window):
+            continue
+
+        # Whose address is this? A seat in a city is shared: alo.cz
+        # printed the address of OLA online s.r.o., rumpold.cz that of
+        # Rumpold - both matched a different company registered at the
+        # same street and number. When the address carries a name, that
+        # name has to be ours.
+        before = text[max(0, match.start() - 80):match.start()]
+        labels = LABELLED.findall(before)
+        if name and labels and not find_name(labels[-1], name):
+            continue
+
+        return text[max(0, match.start() - 20):match.end() + 40].strip()
+    return None
+
+
+def find_person(text, people):
+    """A person from the company's own register entry, named on the page.
+
+    The reasoning is the one whois_evidence() already relies on for the
+    registrant: a full name is specific enough that a collision is not
+    plausible, so it needs no second signal. Both orders are accepted -
+    the register writes "Petr Novák", a contact page as often writes
+    "Novák Petr" - but the two parts must be adjacent, so a shared
+    surname alone never counts.
+
+    Only natural persons. An owner can be a company, and "Schurter
+    Holding AG" found on schurter.com says the site belongs to the
+    group, not to this ICO - that is a different claim and the caller
+    keeps it apart.
+
+    Measured: 56 of 100 proven sites, 24 of 100 resting on the name,
+    1 of 100 where nothing matched.
+    """
+    folded = fold_aligned(text)
+    for person in people or ():
+        parts = [part for part in re.split(r"\s+", fold_aligned(person))
+                 if len(part) > 2 and not part.endswith(".")]   # drop Ing., Mgr.
+        if len(parts) < 2:
+            continue
+        first, last = parts[0], parts[-1]
+        for probe in (f"{first} {last}", f"{last} {first}"):
+            index = folded.find(probe)
+            if index >= 0:
+                return text[max(0, index - 40):index + len(probe) + 40].strip()
+    return None
+
+
 def looks_parked(text):
     return bool(PARKED.search(text[:2000])) or len(text) < 200
 
@@ -804,11 +909,16 @@ def keep(archive, ico, url, html, run_id=None, kind=None):
         return None
 
 
-def inspect(fetcher, domain, ico, name, city, archive=None, run_id=None):
+def inspect(fetcher, domain, ico, name, city, archive=None, run_id=None, facts=None):
     """Read one candidate site and grade the evidence it carries.
 
     Returns None when the domain is not usable at all, otherwise a dict
     with the strongest evidence found.
+
+    `facts` carries what the register says beyond the name - the street
+    and house number of the seat, and the natural persons on the board.
+    Optional: without it the two register-value tiers simply never fire
+    and grading falls back to what it was.
     """
     pages = harvest(fetcher, domain)
     if not pages:
@@ -831,10 +941,35 @@ def inspect(fetcher, domain, ico, name, city, archive=None, run_id=None):
     if all(looks_parked(to_text(body)) for _, body, _ in pages):
         return None
 
-    weak = None
-    for url, body, _kind in pages:
-        text = to_text(body)
+    return grade([(url, to_text(body)) for url, body, _ in pages],
+                 domain, ico, name, city, facts)
 
+
+def grade(pages, domain, ico, name, city, facts=None):
+    """Grade already-extracted page text. No network, no markup.
+
+    Split out of inspect() so the offline re-grading pass judges by the
+    identical rules - a second implementation of "what counts as proof"
+    is exactly the kind of drift this project cannot afford.
+
+    `pages` is a list of (url, text) for one domain, text as the archive
+    stores it.
+    """
+    facts = facts or {}
+
+    # A person's name proves nothing on its own once corporate groups
+    # are in play: the jednatel of a Czech subsidiary sits on the
+    # parent's board too and is named on the parent's site. Measured on
+    # 24 upgrades - requiring the registered town somewhere on the same
+    # domain removed nine, and those nine were rkoller.com,
+    # greipl-group.com, ulbrichts.com, prusa3d.com, skupinappl.cz and
+    # beinbauer-group.de: parents and group sites, every one. The town
+    # alone is worth nothing, as find_city() says; as a second signal
+    # under a name it is exactly what the name_city tier already does.
+    town_seen = any(find_city(text, city) for _, text in pages)
+
+    weak = strong = None
+    for url, text in pages:
         quote = find_ico(text, ico)
         if quote:
             return {"domain": domain, "url": url, "evidence": "ico", "quote": quote,
@@ -845,24 +980,56 @@ def inspect(fetcher, domain, ico, name, city, archive=None, run_id=None):
             return {"domain": domain, "url": url, "evidence": "dic", "quote": quote,
                     "pages_read": len(pages)}
 
-        # An inference is remembered but never returned early: a later
-        # page on the same site may still carry the ICO and settle it.
+        # The other two register values are proofs as well, but weaker
+        # ones, so they are remembered rather than returned: a later
+        # page on the same site may still carry the ICO, and a
+        # registration number beats a name every time. A person outranks
+        # an address because two companies can share a seat - a
+        # subsidiary registered at its parent's address matched the
+        # parent's website in testing - while a full name is its own.
+        if town_seen and (strong is None or strong["evidence"] == "address"):
+            quote = find_person(text, facts.get("people"))
+            if quote:
+                strong = {"domain": domain, "url": url, "evidence": "person",
+                          "quote": quote, "pages_read": len(pages)}
+        if strong is None:
+            quote = find_address(text, facts.get("street"), facts.get("house_number"),
+                                 city, name)
+            if quote:
+                strong = {"domain": domain, "url": url, "evidence": "address",
+                          "quote": quote, "pages_read": len(pages)}
+
+        # An inference is remembered but never returned early either.
         matched = find_name(text, name)
         if weak is None and matched:
             level = "name_city" if find_city(text, city) else "name"
             weak = {"domain": domain, "url": url, "evidence": level, "quote": None,
                     "matched": matched, "pages_read": len(pages)}
 
-    return weak
+    return strong or weak
+
+
+# Evidence that ties a domain to this company rather than suggesting it.
+# The order is the ranking: a registration number first, then the two
+# other register values, then the inferences. `whois_*` are graded in the
+# second pass and appear here so one function answers for every tier.
+PROOF = ("ico", "dic", "whois_org", "whois_person", "person", "address")
+RANK = {tier: index for index, tier in enumerate(
+    ("ico", "dic", "whois_org", "whois_person", "person", "address",
+     "whois_org_group", "name_city", "name", "whois_postcode"))}
+
+
+def proven(evidence):
+    return evidence in PROOF
 
 
 def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=True,
-            archive=None, run_id=None):
+            archive=None, run_id=None, facts=None):
     """Find and prove the website of one company.
 
     Always returns a dict carrying `status`:
 
-        proven     evidence is `ico` or `dic` - a register key on the page
+        proven     evidence is in PROOF - a register value on the page
         probable   evidence is `name_city` or `name` - an inference
         not_found  candidates existed, none could be tied to the company
         no_lead    nothing even resolved in DNS
@@ -900,7 +1067,7 @@ def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=
 
     best = None
     for domain in live:
-        found = inspect(fetcher, domain, ico, name, city, archive, run_id)
+        found = inspect(fetcher, domain, ico, name, city, archive, run_id, facts)
         result["checked"].append({
             "domain": domain,
             "outcome": found["evidence"] if found else "no_match",
@@ -912,17 +1079,24 @@ def resolve(ico, name, city=None, seed_domains=(), fetcher=None, respect_robots=
             result["status"] = "proven"
             return result
 
-        # Rank inferences: a name plus the registered town beats a bare
-        # name, and neither ever outranks a proof.
-        if found and (best is None or found["evidence"] == "name_city"):
+        # Everything else is ranked rather than returned: a person or an
+        # address is a proof, but a registration number on the *next*
+        # candidate domain is a better one, so the search goes on.
+        if found and (best is None
+                      or RANK[found["evidence"]] < RANK[best["evidence"]]):
             best = found
 
     if best:
         result.update({k: best.get(k) for k in
                        ("domain", "url", "evidence", "quote", "matched")})
-        result["status"] = "probable"
+        result["status"] = "proven" if proven(best["evidence"]) else "probable"
     else:
         result["status"] = "not_found"
+    # Said out loud rather than left in the fetcher: a page read over a
+    # connection whose certificate did not verify is still evidence, but
+    # a salesperson asking "where is this from" deserves to know.
+    if result["domain"] in fetcher.unverified:
+        result["tls_unverified"] = True
     return result
 
 
