@@ -237,16 +237,29 @@ def default_icp():
     it. `from_default` is kept as a record of who chose the number, not
     as a switch: nothing branches on it any more.
     """
-    from pipeline.sources.res_bulk import (ICP_FORMA, ICP_KATPO, ICP_KATPO_UNKNOWN,
-                                           ICP_NACE)
+    from pipeline.sources.res_bulk import ICP_FORMA, ICP_KATPO, ICP_NACE
     return {
         "nace": sorted(ICP_NACE),
-        # Both the sized bands and the unsized tier. The brief admits a
-        # company whose headcount the register never recorded - refusing
-        # it would be reading absence as a negative answer - while
-        # res_bulk decides separately how such a company is ever
-        # enriched, which is not the same question.
-        "katpo": sorted(ICP_KATPO + ICP_KATPO_UNKNOWN),
+        # The sized bands only. The unsized tier (ICP_KATPO_UNKNOWN) is
+        # still a tier the interface can tick, and scoring/select.py's
+        # ordering() knows what to do when it is - but it is no longer
+        # ticked for the salesperson who never asked.
+        #
+        # Measured on the pool it actually produced, which is what
+        # changed the answer: 18 companies, all of them without a proven
+        # domain or a single channel, firing a registry event at 20 % a
+        # week against 0.06 % for everyone else. RES leaves the headcount
+        # empty for a company that files nothing, so the tier in practice
+        # holds shells - and shells change directors constantly, which is
+        # our cleanest signal. Admitting them by default put four of one
+        # week's seven events on companies nobody can call.
+        #
+        # This is not hypothesis E reversed. Absence of a headcount is
+        # still not a headcount of zero: the tier remains selectable, the
+        # companies remain in the base, and a run that ticks it ranks
+        # them below every company whose size is known instead of
+        # dropping them.
+        "katpo": sorted(ICP_KATPO),
         "forma": sorted(ICP_FORMA),
         "regions": None,
         "location": {

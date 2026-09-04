@@ -612,6 +612,11 @@ def evaluate(ico, archive, websites, contacts, vacancies_by_ico, events,
         "geography": geography(company, icp),
         "negative": findings,
         "demoted": negative.demotes(findings),
+        # The register never recorded this company's headcount. Kept as
+        # its own flag rather than folded into `demoted`, because it is
+        # not a finding about the company - it is the absence of one,
+        # and the card has to be able to say which of the two it is.
+        "size_unknown": str(company.get("employee_code") or "000") == "000",
         # Not part of the ordering - a gate on being handed over at all.
         # See undeliverable().
         "undeliverable": undeliverable(site, contact_r),
@@ -760,23 +765,35 @@ def ordering(row):
        that nothing ever subtracted, and points were the wrong shape
        anyway - an uncalibrated 8 either swamps the score or drowns in
        it. One step down the order says exactly what was meant.
-    3. Class of the reason, A to E - see reason_class() for where each
+    3. No recorded headcount. Measured, and the measurement is the whole
+       argument: the 18 such companies in the pool fire a registry event
+       at 20 % a week against 0.06 % for the rest - 330 times the rate -
+       and not one of them has a proven domain or a single channel. RES
+       leaves KATPO empty for a company that files nothing, which a real
+       50-200 person manufacturer cannot be; what is left are shells,
+       and shells change directors constantly, so they land in the
+       cleanest signal we have. They are NOT dropped: absence of a
+       headcount is not a headcount of zero, and hypothesis E says so.
+       They simply never take a place in the five from a company whose
+       size is known.
+    4. Class of the reason, A to E - see reason_class() for where each
        line comes from in the document.
-    4. Corroboration: two or more different kinds of event at once. The
+    5. Corroboration: two or more different kinds of event at once. The
        only feature that showed a real lift against the buyer label
        (1.85, 24 % against 13 %).
-    5. Inside the preferred radius. Geography is a row in the ICP's own
+    6. Inside the preferred radius. Geography is a row in the ICP's own
        "kdo to je" table and RTsoft drives to the shop floor.
-    6. Freshness within the class - as an opening line for the call, not
+    7. Freshness within the class - as an opening line for the call, not
        as a probability. See class_age_days().
 
     Then, and only then, the count of verified facts, purely to break a
-    tie between two companies that are equal on all six. PAIN no longer
+    tie between two companies that are equal on all seven. PAIN no longer
     chooses anybody; it fills the card.
     """
     return (
         row["fit"]["rank"],
         1 if row["demoted"] else 0,
+        1 if row["size_unknown"] else 0,
         REASON_ORDER.index(row["reason"]["class"]),
         0 if row["reason"]["corroborated"] else 1,
         0 if row["geography"]["preferred"] else 1,
@@ -902,7 +919,7 @@ if __name__ == "__main__":
               f"{row['fit']['nace_tier']:8}{row['fit']['mode']:20}"
               f"{reason['class']}{'+' if reason['corroborated'] else ' '} "
               f"{reason['age_days']:>4}d {where:>7}"
-              f"{'  ↓' if row['demoted'] else '   '}  "
+              f"{'  ↓' if row['demoted'] else '  ?' if row['size_unknown'] else '   '}  "
               f"{row['pain']['verified']['facts']:2} fact(s)",
               file=sys.stderr)
 
