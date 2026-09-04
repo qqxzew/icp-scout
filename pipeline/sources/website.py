@@ -413,6 +413,11 @@ class Fetcher:
         self.respect_robots = respect_robots
         self._robots = {}
         self._local = threading.local()
+        # Hosts that only answered with certificate checking turned off.
+        # A plain set shared across threads: add() is atomic and nothing
+        # here reads it while a run is in flight. Kept so the caller can
+        # record HOW a page was obtained - see get().
+        self.unverified = set()
 
     @property
     def session(self):
@@ -446,7 +451,7 @@ class Fetcher:
         parser = self._robots[origin]
         return True if parser is None else parser.can_fetch(USER_AGENT, url)
 
-    def get(self, url):
+    def get(self, url, verify=True):
         """Return (html, final_url), or (None, None) when unreachable.
 
         The body is read in bounded chunks rather than through
@@ -455,12 +460,28 @@ class Fetcher:
         transfer: a server that dribbles one byte per second keeps the
         worker forever and never raises. Seen on the full run - the
         counter stopped at 365 of 3294 with every worker still alive.
+
+        AN EXPIRED CERTIFICATE IS NOT AN ABSENT WEBSITE. requests raises
+        SSLError, the blanket `except RequestException` below turned it
+        into "unreachable", and the company came out of the sweep looking
+        like one with no site at all. Measured on 150 domains that stuck:
+        7 (4.7 %) answer only when the certificate is not checked -
+        reinhold-keller.cz serves 133 kB that way, orso.cz 19 kB - and
+        http did not save them either, because the server redirects back
+        to https. On ~1144 such domains that is on the order of fifty
+        companies. The same lesson as the DNS resolver under load (19.6):
+        a specific exception is not a final answer about the world.
+
+        The retry is deliberately narrow: only after a verification
+        failure, never as the default, and the caller is told, because
+        what is read over an unverified connection is weaker evidence
+        that the domain belongs to anyone in particular.
         """
         if not self.allowed(url):
             return None, None
         try:
             response = self.session.get(
-                url, timeout=TIMEOUT, allow_redirects=True, stream=True
+                url, timeout=TIMEOUT, allow_redirects=True, stream=True, verify=verify
             )
             if response.status_code >= 400:
                 return None, None
@@ -471,6 +492,17 @@ class Fetcher:
                 body += chunk
                 if len(body) >= MAX_BYTES or time.monotonic() > deadline:
                     break
+        except requests.exceptions.SSLError:
+            if verify:
+                # urllib3 warns once per host and a sweep touches
+                # thousands; the warning says what the code already says
+                # in the docstring above, and drowning the run's own
+                # progress output is the greater harm.
+                requests.packages.urllib3.disable_warnings(
+                    requests.packages.urllib3.exceptions.InsecureRequestWarning)
+                self.unverified.add(urlparse(url).netloc.lower().replace("www.", ""))
+                return self.get(url, verify=False)
+            return None, None
         except requests.RequestException:
             return None, None
         finally:
