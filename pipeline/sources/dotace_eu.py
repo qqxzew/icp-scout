@@ -139,15 +139,15 @@ PROJECT_KINDS = (
     # Already buying the thing we sell. Not a lead - a lost one, or at
     # best a company to revisit in three years.
     ("already_buying", (
-        r"informacni system", r"\berp\b", r"\bmes\b",
+        # Czech declines, and the literal "informacni system" missed
+        # every inflected form. Measured over the file: 180 projects say
+        # "informacni system" in some case, and five of them were
+        # counting as a signal - among them "Porizeni CNC technologie a
+        # informacniho systemu", a company buying the very thing we
+        # sell, filed as capacity because only the machine was seen.
+        r"informacni\w*\s+system\w*", r"\berp\b", r"\bmes\b",
         r"rizeni vyroby", r"planovani vyroby", r"podnikovy system",
         r"digitalizace vyroby", r"digitalizace a rizeni", r"rizeni podniku",
-    )),
-    # Automating the shop floor without naming a system: the scheduling
-    # problem is getting harder and no software is named yet.
-    ("production_digitalisation", (
-        r"digitaliz", r"automatiz", r"robotiz", r"podnikove procesy",
-        r"digitalni transformac",
     )),
     # Developing something, not installing it. Checked BEFORE capacity
     # because the wording overlaps and the meaning does not: "Prototyp -
@@ -159,7 +159,35 @@ PROJECT_KINDS = (
     # signal kind, so a quarter of that signal was wrong. The other five
     # projects this reorder moves come from energy and training, both
     # non-signal, so nothing else about selection changes.
+    #
+    # And BEFORE production_digitalisation, for the same reason one step
+    # further. `digitaliz` and `automatiz` match what a project is ABOUT
+    # as readily as what it buys: "Výzkum a vývoj nové generace
+    # hybridního polního lůžka ... pro podporu digitalizace
+    # zdravotnictví" is R&D on a field hospital bed, and it reached the
+    # top of a week's five as a shop-floor digitalisation. Measured over
+    # the pool: 7 projects move out of the signal class and all 7 are
+    # development of a product - "Vývoj zakladače obrobků pro CNC",
+    # "Vývoj prototypu robotizovaného svařovacího pracoviště". A company
+    # developing a robot cell may well have a scheduling problem, but
+    # the grant is not evidence of it.
     ("research", (r"vyzkum", r"\bvyvoj", r"\bvav\b", r"inovac", r"prototyp")),
+    # Marketing, but only the half that says so outright - checked here,
+    # before production, because the same trap catches this kind too:
+    # "Prezentace kompozitních struktur v oblasti automatizace" matched
+    # `automatiz` and was delivered as a week's fifth company, when
+    # `automatizace` names the FIELD the company works in and the money
+    # buys a trade-fair stand. The broad half of marketing stays late -
+    # see the second entry at the bottom and what `export` does there.
+    # Measured over the pool: exactly one project moves, and it is that
+    # one.
+    ("marketing", (r"veletr", r"vystav", r"\bmarketing", r"^prezentac")),
+    # Automating the shop floor without naming a system: the scheduling
+    # problem is getting harder and no software is named yet.
+    ("production_digitalisation", (
+        r"digitaliz", r"automatiz", r"robotiz", r"podnikove procesy",
+        r"digitalni transformac",
+    )),
     # Genuinely unrelated to how the company plans its work. Checked
     # BEFORE capacity for the same reason research is: the wording
     # overlaps and the meaning does not. "Porizeni energeticky
@@ -174,7 +202,13 @@ PROJECT_KINDS = (
         r"vyrobni linka",
     )),
     ("training", (r"vzdelavan", r"skoleni", r"kompetenc")),
-    ("marketing", (r"veletr", r"vystav", r"zahranicn", r"export", r"marketing")),
+    # The rest of marketing, kept LATE on purpose - see the strong half
+    # above. `export` and `zahranicn` are the broad ones: "Automatizace
+    # skladových operací společnosti EPICOS export import spol. s r.o."
+    # matches `export` in the COMPANY NAME while being a genuine
+    # warehouse-automation project. Checked after production, it stays
+    # where it belongs.
+    ("marketing", (r"zahranicn", r"export")),
 )
 
 # Which project kinds are worth surfacing as a NOW event at all. The
