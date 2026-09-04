@@ -147,6 +147,9 @@ def parse_summary(data):
             "insolvent": None,
             "file_number": None,
             "address_code": None,
+            "street": None,
+            "house_number": None,
+            "postcode": None,
             "established": None,
             "updated": None,
         }
@@ -178,6 +181,16 @@ def parse_summary(data):
         "insolvent": insolvency_state == "AKTIVNI" if insolvency_state else None,
         "file_number": file_number,
         "address_code": sidlo.get("kodAdresnihoMista"),
+        # Street and house number, kept because together they identify a
+        # website: measured on 100 companies whose domain rested on the
+        # name alone, the registered street plus number appears on 26 of
+        # them. The town on its own is worth nothing - half the country
+        # writes Praha - so the pair has to be kept, not the street.
+        # A village address has no street; there cisloDomovni belongs to
+        # the town itself and nazevUlice is absent, which is normal.
+        "street": sidlo.get("nazevUlice"),
+        "house_number": sidlo.get("cisloDomovni"),
+        "postcode": sidlo.get("psc"),
         # Needed to read the director dates correctly: a company founded
         # last year has an all-new board because it is new, not because
         # anyone was replaced. Without this the two look identical.
