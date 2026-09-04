@@ -96,15 +96,31 @@ ICP_FORMA = ("112", "121")
 #
 # Dispatched work - the resource is a crew, a vehicle or a technician:
 #   38 waste           41 building constr. 42 civil engineering
-#   43 specialised constr. 49 land transport 77 rental and leasing
-#   81 services to buildings and landscape  95 repair of goods
+#   43 specialised constr. 49 land transport
+#
+# Three of these are taken by the group and not by the division, because
+# the whole division fails the ICP's own test while a part of it passes:
+#
+#   77.1 vehicle and 77.3 machinery rental - the ICP's own example is
+#        "prokat mashin". 77.2 is rental of personal goods, which
+#        schedules nothing; it was 83 of the division's 101 companies.
+#   81.2 cleaning and 81.3 landscape - dezinsekce, another of the five
+#        examples, is 81.29. 81.1 is combined facility administration.
+#   95.3 motor vehicle repair - bays and mechanics against jobs, which
+#        is the scheduling problem. 95.1 and 95.2 repair phones and
+#        shoes.
+#
+# Measured before narrowing: 109 companies of 4781 leave the pool and
+# none of them was deliverable in a 30-day window. So this is tidying,
+# not a fix - the four unusable companies that reached a week's events
+# were let in by the size tier, not by this list.
 #
 # NACE cannot tell make-to-order from serial production: a serial and a
 # bespoke furniture maker share code 31. This narrows the field, it does
 # not qualify anyone.
 ICP_NACE = (
     "16", "18", "22", "23", "25", "26", "27", "28", "31", "32", "33",
-    "38", "41", "42", "43", "49", "77", "81", "95",
+    "38", "41", "42", "43", "49", "771", "773", "812", "813", "953",
 )
 
 
@@ -202,7 +218,11 @@ def matches(row, nace=None, katpo=None, forma=None, okres=None, include_terminat
         # what ARES reports too. The old NACE column is the fallback for
         # rows the new one has not reached yet.
         code = row["NACE2025"] or row["NACE"] or ""
-        if not any(code.startswith(prefix) for prefix in nace):
+        # Both directions, same reason as filters/brief.py: a company
+        # classified only as "77" cannot be told apart from 77.1, and
+        # dropping it would read a missing digit as the wrong trade.
+        if not any(code.startswith(prefix) or prefix.startswith(code)
+                   for prefix in nace):
             return False
 
     return True

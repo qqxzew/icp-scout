@@ -80,7 +80,16 @@ def mismatch(company, icp):
         code = company.get("nace") or ""
         if not code:
             return "nace_unknown"
-        if not any(code.startswith(prefix) for prefix in nace):
+        # The match runs both ways, and the second direction is the one
+        # that matters. A brief may ask for 77.1 while the register
+        # records the company only as "77" - RES fills the code to
+        # whatever depth the company was classified, and 6 companies in
+        # the current pool carry a bare division. Testing only
+        # code.startswith(prefix) reads that missing digit as a refusal,
+        # which is hypothesis E's mistake with a different field: no
+        # detail is not a different trade.
+        if not any(code.startswith(prefix) or prefix.startswith(code)
+                   for prefix in nace):
             return "nace"
 
     for value, allowed, name in (
