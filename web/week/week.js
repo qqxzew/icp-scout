@@ -201,6 +201,11 @@ function chips(row, fit, proven, site) {
     list.push({ text: finding.reason || String(finding), warn: true });
   }
   if (row.demoted) list.push({ text: "snížená priorita", warn: true });
+  // Not a warning and not a boast: this company is in the week because
+  // its class of reason would otherwise be missing from it, not because
+  // it outranked the company it displaced. Five cards that all look
+  // equally earned is the one thing the ranking must not imply.
+  if (row.class_slot) list.push({ text: "zástupce třídy " + (row.reason || {}).class });
   for (const sibling of row.group_siblings || []) {
     list.push({ text: `skupina: ${sibling.name || sibling.ico}` });
   }

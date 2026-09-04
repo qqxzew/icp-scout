@@ -745,6 +745,10 @@ def stage_cards(archive, run_id, ranked, top, fetch_turnover=True, icp=None,
         # Other companies of the same group whose reason is this same
         # event - one call, not three (select.collapse_groups).
         card["group_siblings"] = row.get("group_siblings")
+        # Whether this company holds the reserved slot for its class of
+        # reason rather than a place it outranked somebody for. Carried,
+        # not recomputed, for the reason `reason` above is carried.
+        card["class_slot"] = bool(row.get("class_slot"))
         card["rank"] = ranked.index(row) + 1
         card["of_qualified"] = qualified_count if qualified_count is not None else len(ranked)
         cards.append(card)
@@ -873,6 +877,10 @@ def catalogue_row(row, card):
         "fit": catalogue_fit(row.get("fit")),
         "geography": row.get("geography"),
         "reason": row.get("reason"),
+        # Same reasoning as `demoted` and `size_unknown`: the interface
+        # has to be able to say why a company sat where it sat, and
+        # "it is the only one of its class" is one of those reasons.
+        "class_slot": bool(row.get("class_slot") or card.get("class_slot")),
         "now_events": events,
         "negative": row.get("negative") or [],
         "demoted": bool(row.get("demoted")),

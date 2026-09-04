@@ -721,6 +721,79 @@ def undeliverable(site, contact):
     return problems
 
 
+def spread_classes(rows, top):
+    """One company per class of reason before a second of any class.
+
+    THE ORDERING IS STRICT BY CLASS, AND THAT MADE FOUR OF THE FIVE
+    CLASSES UNREACHABLE. reason_class() grades A to E straight out of the
+    ICP, and ordering() sorts on that grade, so a week with six
+    leadership changes hands over five leadership changes - a company
+    whose reason is a planner vacancy sits behind every one of them and
+    never arrives, however well it fits otherwise. Measured on the run
+    that prompted this: every deliverable company in the ranking was
+    class B until the vacancy window was widened, and the two class D
+    companies that then appeared would have been pushed out again the
+    first week the register produced five.
+
+    Two reasons to reserve a slot rather than let the grade decide alone,
+    and the second is the real one:
+
+    * RTsoft asked for exactly this. "Je potřeba ty leady vidět a pak v
+      nich hledat vodítka" (24.1) - you cannot look for clues in a class
+      of lead that never leaves the building.
+
+    * IT IS THE ONLY WAY THIS PROJECT WILL EVER GET GROUND TRUTH. 25.5
+      established that no weighting can be calibrated because there are
+      no labels, and a week of five identical reasons is one experiment
+      run five times. Five different classes is five experiments, and
+      after a few weeks the salesperson knows which class answers the
+      phone. Nothing else in the pipeline can produce that information.
+
+    The cost is stated rather than hidden: a strong class A company can
+    lose its place to a weaker class E one. It is capped at one slot per
+    class - the reserved pass takes the BEST row of each class by the
+    same ordering(), and every remaining slot is filled in plain
+    ordering() sequence, so with two classes present the other three
+    slots still go to whoever earned them.
+
+    Rows arrive sorted; the five come back sorted the same way, because
+    the quota decides who is in the week and not who is first in it.
+    """
+    if len(rows) <= top:
+        return rows
+
+    # Who would have made it on the grade alone - the difference is what
+    # the card has to be able to declare.
+    baseline = {row["ico"] for row in rows[:top]}
+
+    picked, seen = [], set()
+    for row in rows:
+        if len(picked) >= top:
+            break
+        if row["reason"]["class"] in seen:
+            continue
+        seen.add(row["reason"]["class"])
+        picked.append(row)
+
+    chosen = {row["ico"] for row in picked}
+    for row in rows:
+        if len(picked) >= top:
+            break
+        if row["ico"] not in chosen:
+            picked.append(row)
+            chosen.add(row["ico"])
+
+    for row in picked:
+        # Not a ranking field - a statement the card makes out loud. A
+        # company that is in the week only because its class would
+        # otherwise be missing has to say so, or the five look like five
+        # verdicts of equal strength.
+        row["class_slot"] = row["ico"] not in baseline
+
+    picked.sort(key=ordering)
+    return picked
+
+
 def already_shown(archive, ico, events):
     """Was this company handed over already, with nothing new since?
 
@@ -897,7 +970,18 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
         print(f"{before - len(deliverable)} folded into a company of the same group "
               f"with the same event", file=sys.stderr)
 
-    return deliverable[:top], ranked
+    # Last, and only here: every filter above decides who MAY be handed
+    # over, this decides which of them the week is spent on. Running it
+    # earlier would let a class quota rescue a company that the delivery
+    # gate was about to refuse.
+    week = spread_classes(deliverable, top)
+    reserved = [row for row in week if row.get("class_slot")]
+    if reserved:
+        print(f"{len(reserved)} in the five on a reserved class slot: "
+              + ", ".join(f"{row['reason']['class']} {(row.get('name') or row['ico'])[:24]}"
+                          for row in reserved), file=sys.stderr)
+
+    return week, ranked
 
 
 if __name__ == "__main__":
@@ -924,7 +1008,11 @@ if __name__ == "__main__":
               f"{reason['class']}{'+' if reason['corroborated'] else ' '} "
               f"{reason['age_days']:>4}d {where:>7}"
               f"{'  ↓' if row['demoted'] else '  ?' if row['size_unknown'] else '   '}  "
-              f"{row['pain']['verified']['facts']:2} fact(s)",
+              f"{row['pain']['verified']['facts']:2} fact(s)"
+              # Marked, not silent: this row is in the week because its
+              # class would otherwise be missing, not because it outranked
+              # the company it displaced. See spread_classes().
+              f"{'  [class slot]' if row.get('class_slot') else ''}",
               file=sys.stderr)
 
     print(json.dumps({"top": top5, "qualified": all_qualified}, ensure_ascii=False, indent=2))

@@ -808,6 +808,18 @@ def render(card):
             bits.append(f"{card['rank']}. z {card.get('of_qualified', '?')} kvalifikovaných")
         out.append(row("Pořadí", " · ".join(bits)))
 
+    # The one thing the ordering cannot say for itself, and it gets its
+    # own line rather than a fourth clause on the one above: row()
+    # truncates at 66 characters, and appended there this was cut off
+    # mid-sentence - the card would have silently dropped the caveat
+    # while keeping the claim. This company is in the week as the only
+    # representative of its class of reason (select.spread_classes); by
+    # the grade alone it was outranked, and a salesperson comparing five
+    # cards has to know which of them got in on merit.
+    if card.get("class_slot") and reason:
+        out.append(row("Do pětice",
+                       f"jako jediná se třídou {reason['class']}, jinak mimo pořadí"))
+
     # The same event at other companies of the same group. Printed
     # because it changes the call rather than decorating it: one owner
     # took over three subsidiaries on one day, and the conversation is
