@@ -159,8 +159,13 @@ function renderPicker(root) {
   const input = el("input");
   input.type = "text";
   input.name = "ico";
-  input.placeholder = "např. 47541717";
+  input.placeholder = "IČO";
   input.autocomplete = "off";
+  // The example is one of the companies the last run actually handed
+  // over, not a number written into this file. A hardcoded IČO ages into
+  // a company nobody has looked at in months - and on a screen about
+  // checking claims, an invented example is the wrong first impression.
+  suggestFromLastRun(input);
   const button = el("button", null, "Otevřít");
   button.type = "submit";
 
@@ -173,6 +178,24 @@ function renderPicker(root) {
     location.search = `?ico=${encodeURIComponent(value)}`;
   });
   root.appendChild(form);
+}
+
+/** Fill the picker's example with a company from the last run, quietly.
+ *
+ * Deliberately silent on failure: no run yet, or no results file, is a
+ * normal state of a fresh checkout, and the field is perfectly usable
+ * with its plain "IČO" placeholder. Only rows the run actually delivered
+ * are offered - a company it held back has no dossier to open.
+ */
+function suggestFromLastRun(input) {
+  fetch("/api/results", { cache: "no-store" })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((payload) => {
+      const rows = payload?.top || payload?.companies || [];
+      const deliverable = rows.find((row) => !(row.undeliverable || []).length);
+      if (deliverable?.ico) input.placeholder = `např. ${deliverable.ico}`;
+    })
+    .catch(() => {});
 }
 
 (function main() {

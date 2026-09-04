@@ -51,7 +51,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from pipeline.evidence.archive import Archive
@@ -65,6 +65,11 @@ MPSV_VACANCIES = Path("data/raw/mpsv_vacancies.jsonl")
 MPSV_HISTORY = Path("data/raw/mpsv_history.jsonl")
 SUBSIDIES = Path("data/raw/dotace_eu.jsonl")
 ENV_FILE = Path(".env")
+# What the run leaves behind for web/week/ to read, and what api/main.py
+# serves at /api/results. Written by the run itself rather than exported
+# by hand: the page that shows the week has to show THIS week, and a
+# fixture that once looked right is the same failure as a stale card.
+RESULTS = Path("data/ui/results/latest.json")
 
 STAGES = ("icp", "refresh", "gate", "enrich", "agents", "select", "cards")
 
@@ -733,6 +738,185 @@ def stage_cards(archive, run_id, ranked, top, fetch_turnover=True, icp=None,
 
 
 # ---------------------------------------------------------------------------
+# The week, as the interface reads it
+# ---------------------------------------------------------------------------
+
+
+# What the industry tier is called on a card. Only the two that are worth
+# saying: a company in the core of the ICP does not need a chip announcing
+# that it is where it should be. Named, and no advice attached - the card
+# states what the classification is and lets the salesperson decide.
+TIER_CZ = {"other": "obor mimo jádro", "service": "výjezdní služba"}
+
+
+def catalogue_fit(fit):
+    """The FIT block with its labels already in Czech.
+
+    The words travel with the data rather than being looked up again in
+    the browser. web/week/ had its own copy of the production-mode names
+    for one commit, guessed rather than taken from here, and every card
+    showed an empty mode while the dossier - reading MODE_CZ - had it
+    right. One vocabulary, written where the values are produced.
+    """
+    from pipeline.scoring.card import MODE_CZ
+
+    fit = dict(fit or {})
+    mode_label, _ = MODE_CZ.get(fit.get("mode"), ("", ""))
+    fit["mode_label"] = mode_label or None
+    fit["tier_label"] = TIER_CZ.get(fit.get("nace_tier"))
+    return fit
+
+
+def catalogue_contact(card):
+    """The one person the catalogue names, or nothing.
+
+    A channel is what makes a name worth printing, so a person with one
+    wins over the first person in the register. GDPR (section 7): name,
+    function and channel only - no score, no history, nothing joined
+    across sources about the human being.
+    """
+    # Three sources, best first, and a channel is required at every step.
+    # A person with no channel is not a fallback, it is a blank line: the
+    # catalogue would print a name and a role and give the salesperson
+    # nothing to do with them.
+    #
+    # But the contact does NOT have to be the owner. Requiring a jednatel
+    # with their own e-mail cost three of one week's companies, and what
+    # they were missing was a personal address, not a way to be reached -
+    # TREJ - servis prints info@trej-servis.cz and four numbers. So a
+    # named person from the contact page comes next, and the company's
+    # own channel after that. Only a company nobody can reach at all
+    # drops out (see catalogue()).
+    people = card.get("contacts") or []
+    person = next((p for p in people if p.get("email") or p.get("phone")), None)
+    if person:
+        return {
+            "name": person.get("name"),
+            "role": person.get("role_registered") or "",
+            "email": person.get("email"),
+            "phone": person.get("phone"),
+        }
+
+    channels = card.get("channels") or {}
+    other = next(iter(channels.get("people") or []), None)
+    if other:
+        # The suffix is not decoration. This name and this job title came
+        # off the company's own page, and the register may say something
+        # else entirely - it does for INCO engineering, whose site calls
+        # Pavel Špitálník a jednatel and whose register does not. A card
+        # that prints "jednatel" for both kinds makes the two look
+        # equally certain, which is the exact failure this project is
+        # built against.
+        role = other.get("role")
+        return {
+            "name": other.get("name"),
+            "role": f"{role} — dle webu" if role else "kontakt z webu firmy",
+            "email": other.get("email"),
+            "phone": other.get("phone"),
+        }
+
+    email = next(iter(channels.get("emails") or channels.get("personal_emails") or []), None)
+    phone = next(iter(channels.get("phones") or []), None)
+    if email or phone:
+        return {"name": None, "role": "obecný kontakt firmy",
+                "email": email, "phone": phone}
+    return None
+
+
+def catalogue_row(row, card):
+    """One company's line in the week's catalogue.
+
+    Built from the ranking row and from the company's card - so the
+    catalogue says the sentence the dossier says instead of writing a
+    second, shorter description of the same event. Only companies that
+    were handed over reach this, and every one of them has a card.
+    """
+    card = card or {}
+    events = card.get("why_now") or []
+
+    # Counted off the card when there is one, so the catalogue's tally and
+    # the dossier's footer cannot disagree about the same company.
+    evidence = card.get("evidence")
+    verified = ({"facts": len(evidence["facts"]), "inferences": len(evidence["inferences"])}
+                if evidence else (row.get("pain") or {}).get("verified") or {})
+
+    turnover = card.get("turnover") or {}
+    return {
+        "ico": row["ico"],
+        "name": card.get("name") or row.get("name"),
+        "city": card.get("city"),
+        "region": card.get("region"),
+        # The band without the word: the catalogue prints it under a
+        # column already headed VELIKOST, where "zaměstnanců" only costs
+        # a second line. The dossier, which has no such column, keeps it.
+        "size": (card.get("size") or "").replace("zaměstnanců", "").strip() or None,
+        "turnover_czk": turnover.get("value_czk"),
+        "site_domain": row.get("site_domain"),
+        "site_status": row.get("site_status"),
+        "fit": catalogue_fit(row.get("fit")),
+        "geography": row.get("geography"),
+        "reason": row.get("reason"),
+        "now_events": events,
+        "negative": row.get("negative") or [],
+        "demoted": bool(row.get("demoted")),
+        # Carried for the same reason as `demoted`: the card has to be
+        # able to say why a company sat where it sat. See ordering().
+        "size_unknown": bool(row.get("size_unknown")),
+        "group_siblings": row.get("group_siblings") or [],
+        "certificates": [{"standard": c["standard"]} for c in card.get("certificates") or []
+                         if c.get("standard")],
+        "contact": catalogue_contact(card),
+        "pain": {"verified": verified},
+    }
+
+
+def catalogue(run_id, window_days, ranked, cards):
+    """The week as a document: the companies actually handed over, only.
+
+    A withheld company does NOT get a line. It was held back because its
+    domain is unproven or it has no channel - and in practice that means
+    no site was ever read for it, so its card would carry a name, an IČO
+    and one line from the register. That is the "seznam" the brief says
+    the output must not be, and putting it on the same screen as a real
+    dossier is worse than a short week.
+
+    The count of what fell out stays in the header. A week of one has to
+    explain itself; it just does not do so with cards.
+    """
+    by_ico = {row["ico"]: row for row in ranked}
+    rows = [catalogue_row(by_ico.get(card["ico"], {"ico": card["ico"]}), card)
+            for card in cards]
+    # Last guard: no reachable person, no line. The gate above should have
+    # stopped these already, so this normally removes nothing.
+    rows = [row for row in rows if row["contact"]]
+    withheld = sum(1 for row in ranked
+                   if row.get("undeliverable") and not row.get("suppressed_by"))
+
+    return {
+        "run_id": run_id,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "window_days": window_days,
+        "qualified": len(ranked),
+        "delivered": len(rows),
+        "withheld": withheld,
+        "top": rows,
+    }
+
+
+def write_results(document, path=RESULTS):
+    """Written to a temporary file and renamed, for the reason every other
+    write in this module gives: a half-written results file looks exactly
+    like a complete short week."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+                         encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -794,6 +978,9 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
     if len(cards) < top:
         print(f"only {len(cards)} companies had a real reason this week, not {top}. "
               f"Handing over {len(cards)} rather than padding the list.", file=sys.stderr)
+
+    written = write_results(catalogue(run_id, window_days, ranked, cards))
+    print(f"\nresults for the interface: {written}", file=sys.stderr)
 
     archive.finish_run(run_id)
     archive.close()

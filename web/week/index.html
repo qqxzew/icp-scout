@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>icp-scout — pět firem na týden</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="week.css?v=5">
+</head>
+<body>
+
+<!-- The same two icons the dossier draws, with the same paths: a link to
+     a source and a channel hanging off the line above it. Ids are
+     prefixed because `id="wk-deck"` once collided with the deck
+     container's own id and getElementById returned the symbol. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="wk-i-arrow" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></symbol>
+  <symbol id="wk-i-external" viewBox="0 0 16 16"><path d="M6.5 4.5H11.5V9.5M11.5 4.5L5 11"/></symbol>
+  <symbol id="wk-i-sub" viewBox="0 0 12 12"><path d="M3 1V6.5C3 7.6 3.9 8 4.8 8H8M8 8L6.2 6.2M8 8L6.2 9.8"/></symbol>
+</svg>
+
+<main class="wk-stage">
+<div class="wk" data-view="deck">
+
+  <header class="wk-head">
+    <div>
+      <h1 class="wk-head__title">Pět firem na tento týden</h1>
+      <p class="wk-sub" id="wk-sub">Načítání…</p>
+    </div>
+
+    <div class="segmented wk-switch" role="group" aria-label="Zobrazení">
+      <button class="seg-item" type="button" data-set-view="deck" aria-pressed="true">Karty</button>
+      <button class="seg-item" type="button" data-set-view="grid" aria-pressed="false">Přehled</button>
+    </div>
+  </header>
+
+  <!-- The deck is the scroll container in "karty" and a plain grid in
+       "přehled". Same nodes in both: switching a view must never rebuild
+       cards, or the card the salesperson was reading loses focus and the
+       list jumps back to the start. -->
+  <div class="wk-deck-wrap">
+    <button class="wk-nav wk-nav--prev" type="button" data-scroll="-1" aria-label="Předchozí firma">
+      <svg aria-hidden="true"><use href="#wk-i-arrow"/></svg>
+    </button>
+
+    <div class="wk-deck" id="wk-deck" tabindex="-1"
+         role="group" aria-roledescription="karusel" aria-label="Firmy tohoto týdne"></div>
+
+    <button class="wk-nav wk-nav--next" type="button" data-scroll="1" aria-label="Další firma">
+      <svg aria-hidden="true"><use href="#wk-i-arrow"/></svg>
+    </button>
+  </div>
+
+  <footer class="wk-foot">
+    <div class="wk-dots" id="wk-dots" role="tablist" aria-label="Přejít na firmu"></div>
+    <span class="wk-counter" id="wk-counter" aria-hidden="true"></span>
+    <span class="wk-sr" id="wk-live" aria-live="polite"></span>
+    <span class="wk-legend">FIT → třída důvodu → korroborace → radius → čerstvost</span>
+  </footer>
+
+</div>
+</main>
+
+<!-- One card, once. Cloning a template beats building a dozen elements
+     per company in JS: the browser parses this markup a single time, and
+     the structure stays readable as markup instead of as constructor
+     calls. -->
+<template id="wk-card-tpl">
+  <article class="wk-card" tabindex="-1">
+    <span class="wk-rank" data-f="rank" aria-hidden="true"></span>
+    <span class="wk-sr" data-f="sr-rank"></span>
+
+    <div class="wk-main">
+      <h2 class="wk-name" data-f="name"></h2>
+      <p class="wk-ico" data-f="ico"></p>
+
+      <section class="wk-block">
+        <h3>Proč teď</h3>
+        <p class="wk-reason">
+          <span class="wk-class" data-f="class"></span><span data-f="label"></span><span class="wk-age" data-f="age"></span>
+        </p>
+        <p class="wk-why"><span data-f="why"></span><span data-f="why-source"></span></p>
+        <q data-f="quote"></q>
+      </section>
+
+      <dl class="wk-facts" data-f="facts"></dl>
+      <ul class="wk-chips" data-f="chips"></ul>
+
+      <section class="wk-block wk-block--contact">
+        <h3 data-f="contact-title">Kontakt</h3>
+        <div data-f="contact"></div>
+      </section>
+
+      <p class="wk-foot-line">
+        <span class="wk-evidence" data-f="evidence"></span>
+        <a class="wk-open" data-f="open">Otevřít podklad</a>
+      </p>
+    </div>
+  </article>
+</template>
+
+<script src="week.js?v=6"></script>
+</body>
+</html>

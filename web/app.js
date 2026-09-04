@@ -36,6 +36,12 @@ let data = { nace: null, sizes: null, regions: null };
 let saved = blank();
 let draft = blank();
 
+// What the pipeline falls back to when these two fields are left empty,
+// as GET /api/icp reported it. Kept so the hints under "Vlastní okruh"
+// can state the real default instead of repeating "Plzeň" and "150" in
+// this file - the same reason the NACE list is not copied here either.
+let icpDefault = { from: "", km: null };
+
 let view = { name: "root", division: null };
 let dirty = false;
 let exitArmed = false;
@@ -176,6 +182,10 @@ function fromIcp(icp) {
   state.km = location.km ?? null;
   state.from = location.from || "";
   state.origin = location.origin || null;
+  icpDefault = {
+    from: state.from || (location.origin || {}).name || "",
+    km: state.km,
+  };
   return state;
 }
 
@@ -698,12 +708,12 @@ function customRadius() {
     <div class="field-set">
       <div class="field">
         <label class="field-label" for="from">Odkud měřit</label>
-        <input id="from" type="text" placeholder="Plzeň" value="${draft.from}" autocomplete="off">
+        <input id="from" type="text" placeholder="${icpDefault.from}" value="${draft.from}" autocomplete="off">
         <div class="suggest" id="suggest"></div>
       </div>
       <div class="field">
         <label class="field-label" for="km">Poloměr v km</label>
-        <input id="km" type="text" inputmode="numeric" placeholder="150" value="${draft.km ?? ""}" autocomplete="off">
+        <input id="km" type="text" inputmode="numeric" placeholder="${icpDefault.km ?? ""}" value="${draft.km ?? ""}" autocomplete="off">
       </div>
     </div>`;
 }
