@@ -698,11 +698,55 @@ def undeliverable(site, contact):
         problems.append("neprokázaný web")
     if not contact.get("any_channel"):
         problems.append("žádný kontakt")
+    # `any_channel` counts the switchboard and info@ on purpose, and it is
+    # the right level. It was briefly tightened to "a register-confirmed
+    # person with a channel of their own" after TREJ - servis and INCO
+    # engineering reached cards whose contact block read "PAVEL TREJBAL,
+    # jednatel" and then nothing. But the fault was in the card, not in
+    # the gate: both companies publish an info@ address and four phone
+    # numbers, and nothing was printing them. card.py now carries those
+    # channels and run.py's catalogue_contact() falls back to them, so
+    # the condition is once again "can this company be reached", which is
+    # what the brief asks - not "does its owner publish a private
+    # address", which three of one week's five failed for no good reason.
     return problems
 
 
+def already_shown(archive, ico, events):
+    """Was this company handed over already, with nothing new since?
+
+    Requirement 8 of the brief: a repeat run has to know what it gave
+    out last time. The table has been filled since 29.08 and never read,
+    and it shows: 20 companies account for 100 deliveries, an average of
+    five appearances each. Nobody chose that - the NOW window simply
+    keeps matching the same event week after week, and the subsidy
+    window is 120 days wide, so a company with one grant can hold a
+    place for four months on a reason nobody has acted on.
+
+    Not a permanent ban, which would be the wrong reading of the log
+    (22.1): a company leaves the pool when the salesperson writes to it,
+    not when it appears on a card. The condition is narrower - it is the
+    REASON that goes stale, not the company. A new event dated after the
+    last delivery is a new reason to call, and the company comes back
+    with it.
+    """
+    rows = archive.delivered(ico=ico)
+    if not rows:
+        return False
+    last = max(row["delivered_at"] for row in rows)[:10]
+    for event in events:
+        # Tenders carry the bid deadline as their date, which is in the
+        # future; they are current for as long as bids are open, so they
+        # never go stale this way.
+        if event.get("kind") == "tender_open":
+            return False
+        if (event.get("date") or "") > last:
+            return False
+    return True
+
+
 def ordering(row):
-    """The sort key. Six steps, each traceable to the brief or to a measurement.
+    """The sort key. Seven steps, each traceable to the brief or to a measurement.
 
     1. FIT group - the NACE tier, and nothing else. Put anything else
        first and a construction firm with a subsidy outranks a
@@ -814,6 +858,16 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
         print(f"{len(ranked) - len(deliverable)} of {len(ranked)} qualified companies "
               f"held back: " + ", ".join(f"{count}× {reason}"
                                          for reason, count in held.most_common()),
+              file=sys.stderr)
+
+    # After the delivery gate and before folding groups: a company held
+    # back for having no channel was never shown, so asking whether its
+    # reason is stale would answer a question nobody asked.
+    before = len(deliverable)
+    deliverable = [row for row in deliverable
+                   if not already_shown(archive, row["ico"], row["now_events"])]
+    if len(deliverable) < before:
+        print(f"{before - len(deliverable)} already delivered on the same reason",
               file=sys.stderr)
 
     before = len(deliverable)
