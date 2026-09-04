@@ -523,7 +523,15 @@ def describe(event):
             millions = f"{float(event.get('total_czk') or 0) / 1e6:.1f} mil. Kč"
         except (TypeError, ValueError):
             millions = "částka neuvedena"
-        return f"podepsaná dotace EU ({millions}): {event.get('project', '')[:90]}"
+        # The signing date belongs in the sentence, not only in the
+        # event. Since SUBSIDY_WINDOW went to a year this line can carry
+        # a grant signed ten months ago, and "podepsaná dotace" with no
+        # date reads as "last week" - which is the one thing it is not.
+        signed = event.get("date")
+        when = f", podepsáno {signed}" if signed else ""
+        stale = "" if event.get("fresh") else " (starší, ověřit stav)"
+        return (f"podepsaná dotace EU ({millions}){when}{stale}: "
+                f"{event.get('project', '')[:90]}")
     who = event.get("name") or "neuvedeno"
     role = f" ({event['role']})" if event.get("role") else ""
     verb = {
