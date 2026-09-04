@@ -577,9 +577,21 @@ def stage_enrich(archive, run_id, icos):
         if ico in status:
             continue
         company = known.get(ico) or {}
+        # What the register says beyond the name, so the address and
+        # person tiers can fire. Natural persons only: an owner that is
+        # a company names the group, and the group's site is not this
+        # company's - see website.grade().
+        members = (company.get("directors") or []) + (company.get("owners") or [])
+        facts = {
+            "street": company.get("street"),
+            "house_number": company.get("house_number"),
+            "people": [p["name"] for p in members
+                       if p.get("name") and not p.get("is_legal_entity")],
+        }
         try:
             found = resolve(ico, company.get("name") or "", company.get("city"),
-                            fetcher=fetcher, archive=archive, run_id=run_id)
+                            fetcher=fetcher, archive=archive, run_id=run_id,
+                            facts=facts)
         except Exception as error:
             print(f"  {ico}: resolve failed, {type(error).__name__}", file=sys.stderr)
             continue
