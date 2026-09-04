@@ -1364,6 +1364,117 @@ def mark_contested(path=OUTPUT):
     return flagged
 
 
+def register_facts(candidates=CANDIDATES, res_path=Path("data/raw/res_data.csv")):
+    """ICO -> the register values the two new tiers compare against.
+
+    People come from the candidate file, which already holds the board.
+    Street and house number come from the RES export rather than from
+    ARES, because the candidate file predates parse_identity() keeping
+    them and re-fetching 9843 companies to read one column would be
+    absurd. One pass over 517 MB, about a minute.
+    """
+    facts = {}
+    with open(candidates, encoding="utf-8") as handle:
+        for line in handle:
+            record = json.loads(line)
+            if not record.get("name"):
+                continue                      # a row that only carries an error
+            members = (record.get("directors") or []) + (record.get("owners") or [])
+            facts[record["ico"]] = {
+                "name": record["name"],
+                "city": record.get("city"),
+                # Natural persons only. An owner that is a company names
+                # the group, and the group's website is not this ICO's.
+                "people": [p["name"] for p in members
+                           if p.get("name") and not p.get("is_legal_entity")],
+                "street": record.get("street"),
+                "house_number": record.get("house_number"),
+            }
+
+    if not Path(res_path).exists():
+        return facts
+
+    import csv
+    with open(res_path, encoding="utf-8", newline="", errors="replace") as handle:
+        for row in csv.DictReader(handle):
+            ico = (row.get("ICO") or "").zfill(8)
+            known = facts.get(ico)
+            if known and not known["street"]:
+                known["street"] = (row.get("ULICE_TEXT") or "").strip() or None
+                known["house_number"] = (row.get("CDOM") or "").strip() or None
+    return facts
+
+
+def run_regrade(path=OUTPUT, limit=None):
+    """Re-judge the pages already in the archive. No network at all.
+
+    The two register-value tiers were added after the last full sweep,
+    and the pages they need are already on disk - re-crawling 9843 sites
+    to apply a new comparison would be an hour and a half of requests
+    for information nobody has to ask for twice.
+
+    Pages are grouped by the domain they came from, because a company
+    that ended up `not_found` still has the pages of every candidate the
+    sweep looked at, and the answer may be on one of them.
+    """
+    from pipeline.evidence.archive import Archive
+
+    archive = Archive()
+    rows = [json.loads(line) for line in open(path, encoding="utf-8")]
+    facts = register_facts()
+
+    todo = [row for row in rows if row.get("status") in ("probable", "not_found")]
+    if limit:
+        todo = todo[:limit]
+    print(f"{len(todo)} unproven of {len(rows)}; re-reading the archive",
+          file=sys.stderr)
+
+    upgraded = {}
+    for index, row in enumerate(todo, 1):
+        ico = row["ico"].zfill(8)
+        known = facts.get(ico)
+        if not known:
+            continue
+
+        by_domain = {}
+        for snapshot, text in archive.documents(ico, source="website"):
+            if not text or not snapshot["url"]:
+                continue
+            host = urlparse(snapshot["url"]).netloc.lower().replace("www.", "")
+            by_domain.setdefault(host, []).append((snapshot["url"], text))
+
+        best = None
+        for domain, pages in by_domain.items():
+            found = grade(pages, domain, ico, known["name"], known["city"], known)
+            if found and (best is None
+                          or RANK[found["evidence"]] < RANK[best["evidence"]]):
+                best = found
+
+        if best and proven(best["evidence"]) and not proven(row.get("evidence")):
+            row.update({k: best.get(k) for k in ("domain", "url", "evidence", "quote")})
+            row["status"] = "proven"
+            row["regraded"] = True
+            upgraded[best["evidence"]] = upgraded.get(best["evidence"], 0) + 1
+
+        if index % 500 == 0:
+            print(f"  {index}/{len(todo)}  {upgraded}", file=sys.stderr)
+
+    with open(path, "w", encoding="utf-8") as sink:
+        for row in rows:
+            sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    tally = {}
+    for row in rows:
+        tally[row["status"]] = tally.get(row["status"], 0) + 1
+    print("\nafter re-grading the archive:", file=sys.stderr)
+    for status in ("proven", "probable", "not_found", "no_lead", "error"):
+        count = tally.get(status, 0)
+        print(f"  {status:10} {count:5}  {count / len(rows) * 100:5.1f} %",
+              file=sys.stderr)
+    print(f"  upgrades: {upgraded}", file=sys.stderr)
+    return upgraded
+
+
 def run_whois(limit=None):
     """Re-read websites.jsonl and try the registry on everything unproven.
 
@@ -1450,6 +1561,8 @@ if __name__ == "__main__":
                         help="second pass: ask CZ.NIC about everything still unproven")
     parser.add_argument("--contested", action="store_true",
                         help="flag domains several companies claim on a generic name")
+    parser.add_argument("--regrade", action="store_true",
+                        help="re-judge archived pages with the register-value tiers")
     parser.add_argument("--limit", type=int, help="stop after N companies")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seeds", nargs="*",
@@ -1468,6 +1581,8 @@ if __name__ == "__main__":
 
     if args.contested:
         mark_contested()
+    elif args.regrade:
+        run_regrade(limit=args.limit)
     elif args.whois:
         run_whois(args.limit)
     elif args.all:
