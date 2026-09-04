@@ -512,8 +512,9 @@ def stage_gate(window_days, icp, archive=None, run_id=None):
     """
     from pipeline.filters.brief import describe
     from pipeline.scoring.select import eligible
-    from pipeline.signals.now import (find, load_companies, load_history,
-                                      load_tenders, record)
+    from pipeline.signals.now import (VACANCY_FRESH_DAYS, VACANCY_WINDOW, find,
+                                      load_companies, load_history, load_tenders,
+                                      publication_lag, record)
     from pipeline.sources.dotace_eu import load as load_subsidies
 
     companies = list(load_companies(CANDIDATES))
@@ -522,6 +523,22 @@ def stage_gate(window_days, icp, archive=None, run_id=None):
     tenders = load_tenders()
 
     print(f"  brief: {describe(icp)}", file=sys.stderr)
+
+    # `window_days` is the registry window; every other source keeps its
+    # own, sized to how far behind it publishes (signals/now.py). The
+    # vacancy one is derived from a lag that moves, so it is re-measured
+    # here on every run - a constant that has quietly stopped being true
+    # is exactly how this signal produced zero for weeks without anybody
+    # being able to see why.
+    lag = publication_lag()
+    if lag is not None:
+        print(f"  windows: registry {window_days}d, vacancies {VACANCY_WINDOW}d "
+              f"(MPSV lag measured at {lag}d)", file=sys.stderr)
+        if lag + window_days > VACANCY_WINDOW:
+            print(f"    WARNING: MPSV now lags {lag} days, so a {VACANCY_WINDOW}-day "
+                  f"window no longer reaches back a full run cadence - postings can "
+                  f"fall between two runs. Re-derive VACANCY_LAG "
+                  f"(python -m pipeline.signals.now --lag).", file=sys.stderr)
     print(f"  {funnel['total']} candidates -> {funnel['pool']} after the brief "
           f"and the negative filters", file=sys.stderr)
     # Every reason printed, not just the total: a brief that drops 3200

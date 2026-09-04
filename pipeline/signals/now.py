@@ -18,6 +18,25 @@ Group B ("the system creaks") has no dated source at all - it is a
 quality of a company, not an event with a timestamp - so it produces no
 NOW claims here. It belongs to PAIN, once that scorer exists.
 
+EVERY SOURCE KEEPS ITS OWN WINDOW, and they are not close to each other:
+
+    register     2 days behind   window = the run's own, 7 days
+    vacancies    10 days behind  window 24 days   (VACANCY_WINDOW)
+    subsidies    35 days behind  window 120 days  (SUBSIDY_WINDOW)
+    tenders      published same day, no window at all - a bid deadline
+                 decides, and an age never could
+
+(The register's two days is the freshest event we hold, so it covers
+ARES's own delay and our refresh cadence together; the other three are
+the source's delay alone, measured inside the file it hands us.)
+
+Measured, on 04.09.2026, and it is the whole reason a weekly run looked
+for months as though only one signal worked. It did: the register is the
+only source that publishes faster than the run repeats. Asking the other
+three "what happened in the last seven days" is asking them for
+something they physically do not contain yet, and getting a zero back
+that says nothing about whether anything happened.
+
 A departure is scored the same way as an arrival, deliberately. The
 log's own recognition question - "kdo u vás ví, co se má dělat zítra, a
 co se stane, když onemocní" - is a departure happening, not an arrival.
@@ -167,6 +186,79 @@ def isco4(value):
     not an error, just a signal that quietly produces zero.
     """
     return str(value or "").rsplit("/", 1)[-1][:4]
+
+
+# THE WINDOW IS A PROPERTY OF THE SOURCE, NOT OF THE RUN, and this signal
+# spent weeks producing zero because it was given the run's window.
+#
+# MPSV publishes its export ten days behind the postings in it. Measured
+# on the file itself: postings aged 0-8 days number one in 38142, and
+# then 9d has 316, 10d has 327, 11d has 591. So a 7-day window - the
+# cadence of the weekly run - matches nothing on this source, ever, for
+# exactly the reason dotace_eu.py records for the monthly subsidy file.
+# Two separate measurements said "the growth signal does not fire" when
+# what they had measured was that it could not.
+#
+# The width is derived, not chosen:
+#
+#   lag                     the export's own delay, measured below
+#   + VACANCY_FRESH_DAYS    how long after we could first have learned of
+#                           a posting it still counts as a reason to call
+#
+# The floor under VACANCY_FRESH_DAYS is the run cadence, and that is
+# arithmetic rather than taste: a run on day X can only see postings
+# dated X - lag or earlier, so the next run seven days later must reach
+# back lag + 7 days or a posting falls between the two runs and neither
+# ever sees it. It is set to twice the cadence so that one missed run - a
+# holiday, a failed fetch - does not silently drop a week of postings.
+#
+# NOT WIDENED FURTHER, and the temptation was measured: 30 days yields 10
+# companies against 6 at 24. run.py's own docstring settles it - "fewer
+# than five is a result", no widening to fill the quota - and 26.7 in the
+# log is the record of doing it anyway with the subsidy window and having
+# to undo it. The number below has a derivation; 30 would only have had
+# an outcome.
+VACANCY_FRESH_DAYS = 14
+
+# Measured 04.09.2026 by publication_lag() over the current export.
+# Kept as a constant so find() stays cheap and pure - it is called once
+# per company - while run.py re-measures on every run and says so when
+# the file drifts away from this number.
+VACANCY_LAG = 10
+VACANCY_WINDOW = VACANCY_LAG + VACANCY_FRESH_DAYS
+
+# The lag is read off a low percentile rather than off the newest row.
+# The newest row in the file is dated three days back and is the only one
+# in eight days - one advert somebody backdated, or a correction - and
+# taking it literally says the source is three days fresh when the next
+# 38141 rows say it is ten. A percentile cannot be fooled by one row, and
+# 1 % sits on the cliff itself: 0.1 % gives 9 days, 1 % gives 10, 2 %
+# gives 11, which is the same answer three times.
+LAG_PERCENTILE = 0.01
+
+
+def publication_lag(path=MPSV_CURRENT, today=None):
+    """How many days behind the postings in it the MPSV export runs.
+
+    Measured rather than assumed, for the reason dotace_eu.py gives about
+    its own monthly file: the export is replaced daily, so how stale it
+    is changes under us, and a hard-coded lag is a fact that silently
+    stops being true. Returns None when there is no file to measure.
+    """
+    today = today or date.today()
+    ages = []
+    if not Path(path).exists():
+        return None
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            posted = parse_date(row.get("posted"))
+            if posted:
+                ages.append((today - posted).days)
+    if not ages:
+        return None
+    ages.sort()
+    return ages[int(len(ages) * LAG_PERCENTILE)]
 
 
 def load_history(path=MPSV_HISTORY, current=MPSV_CURRENT):
@@ -460,8 +552,16 @@ def parse_deadline(value):
 
 
 def find(company, history, window_days=30, today=None, subsidies=None,
-         subsidy_window=SUBSIDY_WINDOW, tenders=None):
+         subsidy_window=SUBSIDY_WINDOW, tenders=None,
+         vacancy_window=VACANCY_WINDOW):
     """Every dated NOW event for one company, tagged with confidence.
+
+    `window_days` is the REGISTRY window and nothing else. Each source
+    keeps its own, sized to how far behind that source publishes -
+    subsidies 120 days, vacancies 24, tenders none at all because a bid
+    deadline is not an age. Only the register publishes faster than the
+    run repeats, which is why only the register can be asked "what
+    happened in the last seven days".
 
     `confidence` is not a score - it is a visible flag for the one
     failure mode that matters here: a vacancy event on a company barely
@@ -472,8 +572,13 @@ def find(company, history, window_days=30, today=None, subsidies=None,
     events = drop_reentries(registry_events(company, window_days, today), company)
 
     depth = role_history_depth(company["ico"], history, today)
-    for event in vacancy_events(company["ico"], history, window_days, today):
+    for event in vacancy_events(company["ico"], history, vacancy_window, today):
         event["confidence"] = "high" if depth >= 12 else "low" if depth >= 6 else None
+        # Carried onto the event, not just used to filter it: 18.7 says
+        # the card must read "in N months of watching, never this role"
+        # rather than "for the first time", and it cannot say that unless
+        # N travels with the event to describe().
+        event["depth_months"] = depth
         if event["confidence"]:
             events.append(event)
 
@@ -530,7 +635,23 @@ def describe(event):
     EU subsidy" in the middle of an otherwise Czech dossier.
     """
     if event["kind"] == "management_vacancy":
-        return f"inzerát na řídící/plánovací roli: {event.get('title') or event['isco']}"
+        # The date is in the sentence for the same reason it is in the
+        # subsidy line below: this window is 24 days wide because MPSV
+        # publishes ten days late, so an "inzerát" with no date reads as
+        # "posted this week", which it can never be - the source has
+        # nothing that new in it.
+        when = f", zveřejněno {event['date']}" if event.get("date") else ""
+        # And the observation depth, because 18.7 asked for exactly this
+        # and the card never carried it: the depth is what licenses any
+        # reading of the advert as a NEW role, and without it printed the
+        # salesperson cannot tell "they have never needed a planner
+        # before" from "we have only been watching them since June".
+        # It counts months in which this company posted anything at all,
+        # so it is worded as observation, not as the role's own history.
+        depth = event.get("depth_months")
+        seen = f", firma inzeruje v {depth} sledovaných měsících" if depth else ""
+        return (f"inzerát na řídící/plánovací roli{when}{seen}: "
+                f"{event.get('title') or event['isco']}")
     if event["kind"] == "tender_open":
         left = event.get("days_left")
         # The deadline is the actionable number here, not the age: it
@@ -762,10 +883,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dated NOW events per company.")
     parser.add_argument("ico", nargs="?")
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--window", type=int, default=30, help="days back to look")
+    parser.add_argument("--window", type=int, default=30,
+                        help="REGISTRY window in days; the other sources keep "
+                             "their own (see the module docstring)")
+    parser.add_argument("--lag", action="store_true",
+                        help="measure how far behind the MPSV export runs and exit")
     parser.add_argument("--record", action="store_true",
                         help="write events into the evidence store as claims")
     args = parser.parse_args()
+
+    if args.lag:
+        # The one number the whole vacancy window rests on, on demand:
+        # the constant above was measured this way and this is how to
+        # find out that it has stopped being true.
+        measured = publication_lag()
+        print(f"MPSV export lag: {measured} days (constant says {VACANCY_LAG}); "
+              f"window would be {(measured or VACANCY_LAG) + VACANCY_FRESH_DAYS} days, "
+              f"in use {VACANCY_WINDOW}")
+        sys.exit(0)
 
     history = load_history()
 

@@ -17,8 +17,12 @@ small - three stages, each doing one job and nothing else:
           the one exception and it is applied earlier, in brief.py.
 
     NOW   a gate, not a score. A company passes if it has at least one
-          dated event within the run window - and the window is 7 days
-          because the pipeline runs weekly. Nothing about NOW ranks
+          dated event inside ITS SOURCE'S window - 7 days for the
+          register, 24 for vacancies, 120 for subsidies, none at all for
+          an open tender. The 7 days is the run cadence and applies only
+          to the register, because the register is the only source that
+          publishes faster than the run repeats; signals/now.py has the
+          measured lag behind each of the others. Nothing about NOW ranks
           companies against each other; it only decides who is worth
           the expensive PAIN pass at all. This is what keeps a weekly
           run cheap: only NOW-gated companies ever reach harvest().
@@ -139,7 +143,7 @@ def eligible(companies, icp):
 
 
 def now_qualified(companies, history, window_days=DEFAULT_WINDOW, subsidies=None):
-    """Companies with at least one dated NOW event inside the window.
+    """Companies with at least one dated NOW event inside its source's window.
 
     Returns {ico: events}. Everything not in this dict skipped the
     expensive PAIN pass entirely for this run - that is the point of
