@@ -345,6 +345,26 @@ def drop_reentries(events, company=None):
 # 2026-07-23, a month old on arrival, and the yield only becomes
 # non-zero at ~60 days. The subsidy window is therefore deliberately
 # decoupled from the registry/vacancy one rather than sharing it.
+# WIDENED TO 365 AND PUT BACK, AND THE ATTEMPT IS THE POINT. Measured
+# across the whole pool on 04.09.2026, the yield rises smoothly with the
+# window - 120d 0 companies, 180d 4, 240d 6, 300d 9, 365d 15, 730d 32 -
+# so widening looks like a free way to fill a week that the registry
+# alone leaves at one company.
+#
+# It is not free, and the run's own docstring already said so: fewer
+# than five is a result, and the window is not to be widened to fill the
+# quota. At 365 a whole week's five came out as grants signed 179, 262,
+# 294, 316 and 345 days ago, and the one fresh registry event in the
+# same week - a change of owner four days old - was pushed off the list
+# by them. Class A outranks class B by the document, so a stale grant
+# beats a current change of management every time; the number that
+# suffers is not the count, it is what "proč právě teď" means.
+#
+# And the zero at 120 days was never a window problem. No signal-class
+# grant was signed for ANY of our 4781 companies in May, June or July -
+# a three-month gap against a base rate of one to four a month. The
+# honest response to a source with nothing in it is that it contributes
+# nothing this week, not that we reach back a year for something older.
 SUBSIDY_WINDOW = 120
 
 TENDERS = Path("data/raw/nen.jsonl")
