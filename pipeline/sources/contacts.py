@@ -298,6 +298,51 @@ def window_at(text, position, width=WINDOW):
     return text[start:end].strip()
 
 
+def row_segment(text, start, width=WINDOW):
+    """One person's row: forward from their name, stopped at the next one.
+
+    A fixed-width window was the whole story before, and it leaks. A
+    contact table is "name role e-mail phone" repeated with no separator
+    the text layer keeps, so 130 characters from a name routinely reach
+    past the end of that person's row and into the next person's number.
+    Live case, maskop99.cz: Tomáš Jupa's window ran through his own line,
+    on into "Patrik Jupa Obchod / vývoj patrik@… +420 725 117 612", and
+    whichever number came first was handed to whoever was being looked
+    up.
+
+    The next printed personal name is the row boundary the page does not
+    otherwise mark. Cutting there can only shorten a segment - the worst
+    case is a channel we do not claim, which is the failure this project
+    prefers. `looks_like_person` keeps a heading like "Jednatel Mobil"
+    from being read as that boundary.
+
+    PAGE_NAME and looks_like_person() are defined further down, next to
+    the other page-reading pattern they belong with; this runs at call
+    time, so the order is a reading choice rather than a constraint.
+    """
+    segment = text[start:start + width]
+    # From 1, so the surname this segment starts at cannot match itself.
+    for match in PAGE_NAME.finditer(segment, 1):
+        if looks_like_person(match.group(1), match.group(2)):
+            return segment[:match.start()]
+    return segment
+
+
+def given_precedes(text, position, given):
+    """Whether this person's own given name is the word before the surname.
+
+    The check that says which "Jupa" on the page is which. Deliberately
+    the immediately preceding word rather than anything in the vicinity:
+    a wider look-back reaches the previous row, where "tomas@maskop99.cz"
+    would have answered for Tomáš at Patrik's line.
+    """
+    if not given:
+        return False
+    lead = fold(text[max(0, position - 40):position])
+    words = [word for word in re.split(r"[^a-z]+", lead) if word]
+    return bool(words) and words[-1] == given
+
+
 def find_people(text, directors, company_name, domain):
     """Locate the register's people on the page and read their channel.
 
@@ -346,15 +391,34 @@ def find_people(text, directors, company_name, domain):
         }
         shared = len(namesakes) > 1
 
+        # How many people on this board carry this surname. Two of them
+        # is not exotic - a family firm is the ICP's typical company, and
+        # MASKOP 99 has Tomáš and Patrik Jupa as its two jednatelé. The
+        # surname alone then identifies nobody: both men matched every
+        # "Jupa" on the page, the highest-scoring occurrence won for both,
+        # and the card offered one brother's direct line as the other's.
+        board_namesakes = sum(
+            1 for other in directors or []
+            if split_name(other.get("name"))[1] == surname
+        )
+
         best_score = -1
         for match in re.finditer(re.escape(surname), folded):
+            # Whether the page names this particular person here, rather
+            # than a namesake. When the board has two of them, an
+            # occurrence that does not say which is not evidence about
+            # either, so it is skipped rather than guessed at.
+            named = given_precedes(text, match.start(), given)
+            if board_namesakes > 1 and not named:
+                continue
+
             # Details are read forward from the name, not from a window
             # centred on it. A contact table runs "name role e-mail
             # phone, name role e-mail phone" with no separator the text
             # layer preserves, so a centred window reaches back into the
             # previous person's row - on globalfol.cz that gave three
             # different jednatelé the same telephone number.
-            segment = text[match.start():match.start() + WINDOW]
+            segment = row_segment(text, match.start())
 
             emails = [a for a in EMAIL.findall(segment)
                       if owns_domain(a, accepted) or company_freemail(a, company_name)]
@@ -373,7 +437,16 @@ def find_people(text, directors, company_name, domain):
             # Every occurrence of the name is scored and the fullest one
             # wins. Breaking on the first address found lost the row that
             # also carried "majitel a jednatel" and the direct line.
-            score = (3 if mine and not ambiguous else 0) + (2 if role else 0) + (1 if phones else 0)
+            #
+            # An occurrence that prints this person's given name outranks
+            # a richer one that does not, and by more than any other term
+            # can make up. Otherwise the row belonging to somebody else
+            # keeps winning purely by carrying a role word: on
+            # maskop99.cz "Tomáš Jupa Jednatel" scored above "Patrik Jupa
+            # Obchod / vývoj" for Patrik, because "Obchod" is not in ROLE
+            # and "Jednatel" is.
+            score = ((4 if named else 0) + (3 if mine and not ambiguous else 0)
+                     + (2 if role else 0) + (1 if phones else 0))
             if score <= best_score:
                 continue
             best_score = score
@@ -466,7 +539,10 @@ def find_page_people(text, domain, company_name, city, known):
         if key in seen:
             continue
 
-        segment = text[match.start():match.start() + WINDOW]
+        # Same row boundary as find_people() uses: this reads forward
+        # from a role word, so without it the number under the next
+        # person's name is what gets attached here.
+        segment = row_segment(text, match.start())
         emails = [
             a for a in EMAIL.findall(segment)
             if owns_domain(a, accepted) or company_freemail(a, company_name)

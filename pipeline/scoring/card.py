@@ -431,9 +431,54 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
             "page_url": contacts_row.get("source_url"),
         })
 
+    # Channels that belong to the company rather than to a person the
+    # register names: the info@ address, the switchboard, and people
+    # printed on the contact page whom the register does not know.
+    #
+    # Kept apart from `contacts` for the same reason tender contacts are:
+    # a jednatel is a person who can sign, a reception desk is not, and
+    # merging them would let the card call one the other. But without
+    # this block the card had no way to say "reach this company here" at
+    # all - and for most companies that is the only channel there is, so
+    # a week could hold only firms whose statutory director happens to
+    # print their own e-mail.
+    directors = {(d.get("name") or "") for d in company.get("directors") or []}
+    from_page = [
+        {"name": person.get("name"),
+         # The page's word for the job, never the register's. INCO
+         # engineering's site calls Pavel Špitálník "jednatel" while the
+         # register knows only Alexander Rosenstein - printing that
+         # unqualified would hand the salesperson a title the state does
+         # not confirm. run.py marks it as read off the site.
+         "role": person.get("role_on_page"),
+         "email": person.get("email"), "phone": person.get("phone")}
+        for person in (contacts_row.get("people") or [])
+        if (person.get("email") or person.get("phone"))
+        and (person.get("name") or "") not in directors
+        # `page_weak` is a name and a number that happened to sit near
+        # each other with nothing linking them (contacts.py's third
+        # tier, 2528 people). As research it is a lead; on a card it is
+        # one person's name over another person's phone. A company with
+        # only these falls through to its own switchboard below, which
+        # is less specific and actually true.
+        and person.get("source") != "page_weak"
+    ]
+    company_channels = contacts_row.get("company") or {}
+    channels = {
+        "people": from_page,
+        # Generic first, `jmeno.prijmeni@` last: an address that names a
+        # person is that person's, and section 7 wants those handled as
+        # personal data rather than used as a company switchboard.
+        "emails": company_channels.get("emails") or [],
+        "personal_emails": company_channels.get("personal_emails") or [],
+        "phones": company_channels.get("phones") or [],
+        "page_url": contacts_row.get("source_url"),
+    }
+
     tender_people = tender_contacts(ico, tenders)
 
     return {
+        "channels": channels,
         "ico": ico,
         "name": company.get("name") or site.get("name"),
         "region": company.get("region"),
@@ -652,10 +697,7 @@ def render(card):
     fit = card.get("fit") or {}
     mode_label, mode_basis = MODE_CZ.get(fit.get("mode"), ("", ""))
     mode_note = f"{mode_label} ({mode_basis})" if mode_label else ""
-    tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
-                 if fit.get("nace_tier") == "service" else "")
-    joined = " · ".join(x for x in (mode_note, tier_note) if x)
-    out.append(row("Režim výroby", joined,
+    out.append(row("Režim výroby", mode_note,
                    f"https://{card['website']['domain']}" if card["website"].get("domain") else ""))
 
     # Register findings that lower a company without excluding it. High
@@ -859,8 +901,6 @@ def for_web(card):
 
     fit = card.get("fit") or {}
     mode_label, _ = MODE_CZ.get(fit.get("mode"), ("", ""))
-    tier_note = ("obor mimo jádro ICP — prověřit, zda plánuje vlastní kapacity"
-                 if fit.get("nace_tier") == "service" else "")
     # Always marked as the model's reading, never as a register fact - no
     # register carries the production mode at all, the ICP itself files
     # the criterion under "vývod, ne fakt", and checking it by hand gave
@@ -869,7 +909,6 @@ def for_web(card):
     # without spending a line on it.
     rows.append({
         "label": "Režim výroby", "value": mode_label,
-        "note": tier_note or None,
         "inferred": bool(mode_label),
         "inferred_note": "úsudek modelu z textu webu — žádný rejstřík režim výroby neuvádí",
         "source": site_url,
