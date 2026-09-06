@@ -49,7 +49,7 @@ from pathlib import Path
 from urllib.parse import quote as urlquote
 
 from pipeline.evidence.archive import Archive
-from pipeline.evidence.verify import counts_as_evidence, usable
+from pipeline.evidence.verify import counts_as_evidence, newest_pass, usable
 from pipeline.filters import negative
 from pipeline.scoring.select import (CONTACTS, WEBSITES, fit_assessment, geography,
                                      load_jsonl)
@@ -286,11 +286,71 @@ def tender_contacts(ico, tenders):
     return out
 
 
-def certificates_for(ico, cache_path=Path("data/raw/certificates.jsonl")):
-    """Certificates already collected by sources/certificates.py, if any."""
-    if not Path(cache_path).exists():
+def establishments_for(ico, cache_path=Path("data/raw/establishments.jsonl")):
+    """The sites run.py read for this company, last write wins."""
+    path = Path(cache_path)
+    if not path.exists():
         return []
     ico = str(ico).zfill(8)
+    found = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            if row.get("ico") == ico:
+                found = row.get("establishments") or []
+    return found
+
+
+def certificates_for(ico, archive=None, cache_path=Path("data/raw/certificates.jsonl")):
+    """This company's certificates - from the archive first, the file second.
+
+    THE ARCHIVE IS THE LIVE SOURCE AND THE FILE WAS THE ONLY ONE READ.
+    stage_enrich() runs certificates.record() on every gated company and
+    writes each certificate as a verified claim; certificates.py writes
+    data/raw/certificates.jsonl only under --all, which is a manual
+    sweep nobody had run since August. So the pipeline was proving a
+    certificate every week and the card was reading a three-row file
+    that did not contain the company - Daloplast states "Wir sind nach
+    DIN EN ISO 9001 zertifiziert" on its home page, the run archived
+    exactly that with its quote, and the card printed an empty line.
+
+    Claims first, then. The file stays as a fallback for companies the
+    current archive has nothing on, so an old full sweep is not thrown
+    away.
+    """
+    ico = str(ico).zfill(8)
+
+    if archive is not None:
+        found = []
+        for row in archive.claims(ico):
+            if not row["kind"].startswith("certificate:") or row["state"] != "fact":
+                continue
+            if not counts_as_evidence(row):
+                continue
+            # record() writes "ISO 9001 (č. 12345)" as one value, because
+            # a claim is one sentence. Split back out so the card can lay
+            # the parts out in its own columns.
+            value = row["value"] or ""
+            standard, _, number = value.partition(" (č. ")
+            found.append({
+                "standard": standard.strip(),
+                "number": number.rstrip(")").strip() or None,
+                "issuer": None,
+                "tier": row["kind"].split(":", 1)[1],
+                "quote": row["quote"],
+                "source_url": row["url"],
+            })
+        if found:
+            # One line per standard: a company re-crawled across several
+            # runs has the same ISO 9001 proved more than once, and three
+            # identical rows is not three certificates.
+            unique = {}
+            for cert in found:
+                unique.setdefault(cert["standard"], cert)
+            return list(unique.values())
+
+    if not Path(cache_path).exists():
+        return []
     with open(cache_path, encoding="utf-8") as handle:
         for line in handle:
             row = json.loads(line)
@@ -333,7 +393,16 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         # saved brief, the same one the pipeline would run with.
         from pipeline.run import load_icp
         icp = load_icp()
-    company = (companies or {}).get(ico, {})
+    company = dict((companies or {}).get(ico, {}))
+    # The candidate file predates establishments and is only rebuilt on a
+    # full ARES pass, so a card built outside a run - by hand, or by
+    # /api/card/{ico} when the week page opens a dossier - would measure
+    # to the registered seat and drop the warning that the shop floor is
+    # 234 km further on. The run caches what it read; this reads it back.
+    if not company.get("establishments"):
+        cached = establishments_for(ico)
+        if cached:
+            company["establishments"] = cached
 
     claims = archive.claims(ico)
     evidence = {"facts": [], "inferences": []}
@@ -366,11 +435,30 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         }
         (evidence["facts"] if row["state"] == "fact" else evidence["inferences"]).append(item)
 
+    # newest_pass first, for the reason evidence/verify.py gives at
+    # length: a re-run files the same event again, worded slightly
+    # differently by whichever version of describe() was current. ATOMO
+    # PROJEKT accumulated eight "Proč teď" lines across three runs -
+    # three vacancies, each written twice, plus two in an older wording -
+    # and a card listing one vacancy eight times is a card nobody reads
+    # to the end. now: claims are excluded from usable() (they are the
+    # gate, not the evidence), so this has to be said here too.
+    now_rows = newest_pass([row for row in claims if row["kind"].startswith("now:")])
     now_events = [
         {"kind": row["kind"].removeprefix("now:"), "value": row["value"],
          "url": row["url"], "seen_at": row["fetched_at"]}
-        for row in claims if row["kind"].startswith("now:")
+        for row in now_rows
     ]
+    # And within one run: two vacancies posted on the same day for the
+    # same role are one reason to call, not two.
+    seen_values, deduped = set(), []
+    for event in now_events:
+        key = (event["kind"], (event["value"] or "").strip().lower())
+        if key in seen_values:
+            continue
+        seen_values.add(key)
+        deduped.append(event)
+    now_events = deduped
     # signals/now.py no longer produces a departure the present register
     # contradicts, but the archive is append-only by design: a claim
     # written before that fix stays a record of what was believed then,
@@ -506,7 +594,7 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
         # the module docstring.
         "turnover": turnover_for(ico, turnover_cache, fetch_turnover),
         "turnover_site": turnover_from_site(archive, ico),
-        "certificates": certificates_for(ico),
+        "certificates": certificates_for(ico, archive),
         "website": {"domain": site.get("domain"), "status": site.get("status")},
         # Fit is said on the card, not only used in the ordering: the
         # salesperson seeing "stavební firma, mimo jádro ICP" before
@@ -630,6 +718,10 @@ MODE_CZ = {
     "made_to_order": ("zakázková", "přímé tvrzení"),
     "mixed": ("zakázková i sériová", "přímá tvrzení"),
     "small_batch": ("malosériová", "přímé tvrzení"),
+    # Both stated, and both worth reading: the ICP is sold against
+    # scheduling, and "runs of tens to thousands" is a different
+    # scheduling problem from one-off work.
+    "made_to_order_small_batch": ("zakázková i malosériová", "přímá tvrzení"),
     "leaning_made_to_order": ("spíše zakázková", "nepřímé stopy"),
     "leaning_serial": ("spíše sériová", "nepřímé stopy"),
     "serial": ("sériová", "přímé tvrzení"),
@@ -784,6 +876,45 @@ def render(card):
                            card["website"].get("domain") or ""))
     else:
         out.append(row("Jednatel", "", vr))
+
+    # The company's own published channels. Collected into the card since
+    # the run that carried them into select.py, and never printed here -
+    # so peform Chomutov, whose contact page publishes info.fco@peform.com
+    # and a switchboard, was handed over as a dossier with no way at all
+    # to reach the company on it. The rule that admits a company to the
+    # week is "has a proven domain AND a channel"; a card that then omits
+    # the channel contradicts the rule it was selected by.
+    #
+    # Printed after the people, because a named jednatel is the better
+    # call and this is the fallback - and printed even when somebody does
+    # have a personal channel, since the switchboard is who answers when
+    # they do not.
+    channels = card.get("channels") or {}
+
+    # People the site names who are not in the register - a production
+    # manager, a buyer, a planner. Printed before the switchboard because
+    # they are the better call, and after the directors because the
+    # register outranks a page. The role is the page's own word for the
+    # job and is marked as such: the state has not confirmed it.
+    #
+    # This is what Dřevovýroba VLK needed. Its two directors are the
+    # namesakes nothing can be attributed to, so the card fell straight
+    # through to fakturace@ - the invoicing desk - while the same
+    # contact page publishes Pavel Nainar, vedoucí výroby, with his own
+    # address and mobile. Offering a salesperson the accounts inbox when
+    # the shop-floor manager is one line above it is the same mistake as
+    # efaktury@ at SaM, one stage later.
+    for person in (channels.get("people") or [])[:3]:
+        channel = " · ".join(x for x in (person.get("email"), person.get("phone")) if x)
+        role = f" · {person['role']} — dle webu" if person.get("role") else " — dle webu"
+        out.append(row("Kontakt z webu", f"{person.get('name')}{role}"[:VALUE], ""))
+        out.append(row("  ↳ kanál", channel, card["website"].get("domain") or ""))
+
+    general = list(channels.get("emails") or [])[:2]
+    phones = list(channels.get("phones") or [])[:2]
+    if general or phones:
+        out.append(row("Kontakt firmy", " · ".join(general + phones),
+                       card["website"].get("domain") or ""))
 
     # The tender's own contact, kept separate from the website one. It is
     # the person running that purchase - better for this conversation,
@@ -1018,6 +1149,33 @@ def for_web(card):
             "value": channel or person.get("note"),
             "source": fragment_url(person.get("page_url"), channel) if channel else None,
         })
+    # The same two groups render() prints, in the same order, for the
+    # reason this function exists at all: a web view and the terminal one
+    # must not disagree about who to call. Without these the dossier
+    # opened from the week page showed VLK's two unattributable namesakes
+    # and stopped, while the terminal card offered the production
+    # manager the site names.
+    web_channels = card.get("channels") or {}
+    for person in (web_channels.get("people") or [])[:3]:
+        role = f" · {person['role']} — dle webu" if person.get("role") else " — dle webu"
+        contact_rows.append({
+            "label": "Kontakt z webu",
+            "value": f"{person.get('name')}{role}",
+            "source": None,
+        })
+        channel = " · ".join(x for x in (person.get("email"), person.get("phone")) if x)
+        contact_rows.append({"label": "kanál", "sub": True,
+                             "value": channel or None, "source": None})
+
+    general = list(web_channels.get("emails") or [])[:2]
+    phones = list(web_channels.get("phones") or [])[:2]
+    if general or phones:
+        contact_rows.append({
+            "label": "Kontakt firmy",
+            "value": " · ".join(general + phones),
+            "source": None,
+        })
+
     if not contact_rows:
         contact_rows.append({"label": "Jednatel", "value": None, "source": ares_vr})
 

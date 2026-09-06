@@ -324,7 +324,7 @@ def counts_as_evidence(claim_row):
             and not argues_against(claim_row["kind"], claim_row["quote"]))
 
 
-def _newest_pass(rows):
+def newest_pass(rows):
     """One agent's latest reading of one company replaces its earlier ones.
 
     Deduplicating on the quote is not enough, because the model does not
@@ -458,7 +458,7 @@ def usable(rows):
     apart, which is the conservative direction for a claim that was
     never checked against anything.
     """
-    rows = _newest_pass(rows)
+    rows = newest_pass(rows)
 
     groups = {}
     for row in rows:

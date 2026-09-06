@@ -526,7 +526,33 @@ def workplaces_of(ico, archive=None, run_id=None):
     for site in sites:
         site["coordinates"] = (coords.get_coordinates(site["address_code"])
                                if site.get("address_code") else None)
+    save_establishments(ico, sites)
     return sites
+
+
+ESTABLISHMENTS_CACHE = Path("data/raw/establishments.jsonl")
+
+
+def save_establishments(ico, sites, path=ESTABLISHMENTS_CACHE):
+    """Keep the sites where a card can find them later.
+
+    The run reads establishments for the gated few and hands them to
+    select.py in memory, which is enough for the run itself - but a card
+    rendered afterwards (python -m pipeline.scoring.card, or
+    /api/card/{ico} from the week page) rebuilds the company from the
+    candidate file, which has no establishments in it. The distance line
+    then silently loses its "pozor, provozovna ... je 234 km", which is
+    the one thing on it worth reading.
+
+    Same shape as turnover.jsonl: append-only, last line wins, cheap to
+    read. Not the archive, because this is a lookup rather than a claim
+    about the company - nothing here is quoted to a salesperson.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps({"ico": str(ico).zfill(8), "establishments": sites},
+                              ensure_ascii=False) + "\n")
 
 
 def stage_gate(window_days, icp, archive=None, run_id=None):

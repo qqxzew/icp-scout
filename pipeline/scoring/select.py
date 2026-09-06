@@ -312,6 +312,16 @@ def fit_assessment(archive, company, site_status=None):
     if sides:
         if "made_to_order" in sides and "serial" in sides:
             agent_mode = "mixed"
+        elif "made_to_order" in sides and "small_batch" in sides:
+            # Both, and neither swallows the other. signals/mode.py made
+            # the same point about its regex verdict: small_batch is a
+            # full answer, not a weaker made_to_order. peform Chomutov
+            # says "ZAKÁZKOVÉ ZPRACOVÁNÍ PLECHŮ" on one page and
+            # "Realizujeme menší až střední série desítek až tisíců
+            # kusů" on another, and a card that prints only "zakázková"
+            # has dropped the half that says how big the runs are - the
+            # half a scheduling system is actually sold against.
+            agent_mode = "made_to_order_small_batch"
         elif "made_to_order" in sides:
             agent_mode = "made_to_order"
         elif "small_batch" in sides:
