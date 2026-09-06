@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../style.css">
-<link rel="stylesheet" href="week.css?v=5">
+<link rel="stylesheet" href="week.css?v=6">
 </head>
 <body>
 
@@ -21,6 +21,14 @@
   <symbol id="wk-i-external" viewBox="0 0 16 16"><path d="M6.5 4.5H11.5V9.5M11.5 4.5L5 11"/></symbol>
   <symbol id="wk-i-sub" viewBox="0 0 12 12"><path d="M3 1V6.5C3 7.6 3.9 8 4.8 8H8M8 8L6.2 6.2M8 8L6.2 9.8"/></symbol>
 </svg>
+
+<!-- Fixed, small, out of the reading path: the week is the destination,
+     and going back to the brief is the rare second errand, not the first
+     thing to offer somebody who just arrived here from a finished run. -->
+<a class="wk-home" href="/" aria-label="Zpět na zadání">
+  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
+  <span>Zadání</span>
+</a>
 
 <main class="wk-stage">
 <div class="wk" data-view="deck">
@@ -102,6 +110,6 @@
   </article>
 </template>
 
-<script src="week.js?v=6"></script>
+<script src="week.js?v=7"></script>
 </body>
 </html>

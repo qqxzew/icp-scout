@@ -13,8 +13,11 @@ Run:
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import threading
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -41,6 +44,7 @@ ICP_PATH = PROJECT_ROOT / "web" / "icp.json"
 WEB_DIR = PROJECT_ROOT / "web"
 UI_DATA_DIR = PROJECT_ROOT / "data" / "ui"
 RESULTS_PATH = UI_DATA_DIR / "results" / "latest.json"
+RUN_LOG = PROJECT_ROOT / "data" / "run_web.log"
 ARCHIVE = Archive(
 	db_path=PROJECT_ROOT / "data" / "archive.db",
 	snapshot_dir=PROJECT_ROOT / "data" / "snapshots",
@@ -181,6 +185,117 @@ def get_results():
 	if not RESULTS_PATH.is_file():
 		raise HTTPException(status_code=404, detail="No completed run found")
 	return FileResponse(RESULTS_PATH, media_type="application/json")
+
+
+# The run is a subprocess, not a thread or an inline call. pipeline/run.py
+# already is a command with a preflight, its own Archive connections and a
+# habit of writing to stderr; calling run() inside the request would hold a
+# worker for the length of a real run and take the interface down with it if
+# a source raised. A separate process also means the log is a file somebody
+# can read afterwards, which is the first thing asked when a run comes back
+# with three companies instead of five.
+#
+# One at a time: two concurrent runs would write the same results file and
+# the same archive rows, and there is exactly one person pressing the button.
+RUN = {
+	"process": None,
+	"started_at": None,
+	"finished_at": None,
+	"returncode": None,
+}
+RUN_LOCK = threading.Lock()
+
+
+def run_state():
+	"""The status the interface polls, plus when the last finished run was.
+
+	poll() is what turns "started" into "finished" - there is no callback
+	from a subprocess, so the state advances when somebody asks. The button
+	polls anyway, so nothing else has to.
+	"""
+	with RUN_LOCK:
+		process = RUN["process"]
+		if process is not None and process.poll() is not None:
+			RUN["returncode"] = process.returncode
+			RUN["finished_at"] = datetime.now().isoformat(timespec="seconds")
+			RUN["process"] = None
+
+		running = RUN["process"] is not None
+		state = {
+			"running": running,
+			"started_at": RUN["started_at"],
+			"finished_at": RUN["finished_at"],
+			"returncode": RUN["returncode"],
+		}
+
+	# Read from the results file rather than from RUN: the timer has to
+	# survive a server restart, and a run started from the terminal counts
+	# just as much as one started from the button.
+	state["last_run"] = None
+	if RESULTS_PATH.is_file():
+		try:
+			document = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+			state["last_run"] = {
+				"generated_at": document.get("generated_at"),
+				"delivered": document.get("delivered"),
+				"qualified": document.get("qualified"),
+				"run_id": document.get("run_id"),
+			}
+		except (json.JSONDecodeError, OSError):
+			# A results file that cannot be read is not a reason to refuse
+			# to start a new run - which is exactly what the caller wants.
+			pass
+	return state
+
+
+@app.get("/api/run")
+def get_run():
+	return run_state()
+
+
+@app.post("/api/run")
+def start_run():
+	state = run_state()
+	if state["running"]:
+		# Not an error: the button was pressed twice, and the honest answer
+		# is the state of the run that is already going.
+		return state
+
+	RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+	log = RUN_LOG.open("w", encoding="utf-8")
+	log.write(f"# run started from the interface {datetime.now().isoformat(timespec='seconds')}\n")
+	log.flush()
+
+	with RUN_LOCK:
+		RUN["process"] = subprocess.Popen(
+			[sys.executable, "-m", "pipeline.run"],
+			cwd=PROJECT_ROOT,
+			stdout=log,
+			stderr=subprocess.STDOUT,
+			# PYTHONUNBUFFERED: a run that is still going has a log worth
+			# tailing instead of an empty file.
+			# PYTHONIOENCODING: the log file is opened as utf-8 here, and
+			# without this the child encodes its own output as cp1252 on
+			# Windows - the run's "·" separators arrived as mojibake.
+			env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
+		)
+		RUN["started_at"] = datetime.now().isoformat(timespec="seconds")
+		RUN["finished_at"] = None
+		RUN["returncode"] = None
+
+	return run_state()
+
+
+@app.get("/api/run/log", response_class=PlainTextResponse)
+def get_run_log():
+	"""The tail of the current or last run, for when it ends badly.
+
+	Nothing in the interface links here; it is for the person demonstrating
+	the prototype, who otherwise has to go looking for the terminal.
+	"""
+	if not RUN_LOG.is_file():
+		raise HTTPException(status_code=404, detail="No run has been started from the interface")
+	return RUN_LOG.read_text(encoding="utf-8", errors="replace")
 
 
 @app.get("/api/card/{ico}")

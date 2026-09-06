@@ -7,15 +7,21 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
+
+<!-- Fixed to the corner rather than placed in the flow: it belongs to the
+     session, not to either of the two things on the page, and putting it
+     next to one of them would read as that one's caption. -->
+<div class="since" id="since" hidden>
+  <span class="since-label">Poslední běh</span>
+  <span class="since-value" id="since-value">—</span>
+</div>
 
 <main class="stage">
 
   <div class="shell">
-
-    <section class="results" id="results" aria-live="polite"></section>
 
     <section class="panel" id="panel" aria-hidden="true">
       <header class="panel-head">
@@ -35,44 +41,46 @@
       </footer>
     </section>
 
-    <div class="bar">
-      <button class="gear" id="gear" type="button" aria-label="Filtry" aria-expanded="false">
+    <!-- Two separate controls, deliberately not one bar. Editing the brief
+         and spending a run on it are different decisions: the first is
+         reversible and happens often, the second takes minutes and writes
+         the week. Sharing a container implied one was the other's submit
+         button, which it never was. -->
+    <button class="tile tile--filters" id="gear" type="button" aria-expanded="false">
+      <span class="tile-icon">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <path d="M3 6.5h5M12 6.5h5M3 13.5h9M16 13.5h1"/>
           <circle cx="10" cy="6.5" r="1.9"/>
           <circle cx="14" cy="13.5" r="1.9"/>
         </svg>
-      </button>
-      <input class="query" id="query" type="text" placeholder="" autocomplete="off">
-      <button class="run" id="run" type="button" aria-label="Spustit">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4M5 9l5-5 5 5"/></svg>
-      </button>
-    </div>
+      </span>
+      <span class="tile-text">
+        <span class="tile-title">Filtry</span>
+        <span class="tile-sub" id="summary">Načítám zadání…</span>
+      </span>
+      <span class="tile-open">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </span>
+    </button>
 
-    <p class="summary" id="summary"></p>
+    <button class="tile tile--run" id="run" type="button">
+      <span class="tile-icon">
+        <svg class="run-glyph" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4.5l8 5.5-8 5.5V4.5z"/></svg>
+        <span class="run-spinner" aria-hidden="true"></span>
+      </span>
+      <span class="tile-text">
+        <span class="tile-title" id="run-title">Spustit běh</span>
+        <span class="tile-sub" id="run-sub">Najde firmy s důvodem volat tento týden</span>
+      </span>
+      <span class="tile-open">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </span>
+    </button>
 
   </div>
 
 </main>
 
-<section class="evidence-modal" id="evidence-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="evidence-title">
-  <div class="evidence-backdrop" data-close-evidence></div>
-  <div class="evidence-dialog">
-    <header class="evidence-head">
-      <div>
-        <span class="evidence-kicker">Důkaz</span>
-        <h2 id="evidence-title">Archivovaná stránka</h2>
-      </div>
-      <button class="evidence-close" type="button" aria-label="Zavřít" data-close-evidence>×</button>
-    </header>
-    <p class="evidence-meta" id="evidence-meta"></p>
-    <blockquote class="evidence-quote" id="evidence-quote"></blockquote>
-    <div class="evidence-actions">
-      <a id="evidence-full" class="evidence-full" href="#" target="_blank" rel="noreferrer">Otevřít celý text</a>
-    </div>
-  </div>
-</section>
-
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

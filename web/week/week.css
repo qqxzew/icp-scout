@@ -14,6 +14,48 @@
   padding: 48px 24px;
 }
 
+/* home ------------------------------------------------------------------ */
+
+/* Fixed rather than in .wk-head: the header carries the week's own two
+   lines and the view switch, and a back link belongs to the page, not to
+   the week. Small and quiet - it is an exit, not an offer. */
+.wk-home {
+  position: fixed;
+  top: 20px;
+  left: 22px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-decoration: none;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+
+.wk-home svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wk-home:hover { color: var(--ink); border-color: #2e2e2e; }
+.wk-home:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 2px; }
+
+/* The deck's own navigation sits at the left edge on a narrow screen, so
+   the link stops floating over it and rides with the content instead. */
+@media (max-width: 900px) {
+  .wk-home { position: static; margin: 0 0 16px 4px; }
+}
+
 .wk {
   --s2: 8px;
   --s3: 12px;

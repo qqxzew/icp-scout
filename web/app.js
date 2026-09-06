@@ -19,12 +19,10 @@ const el = {
   save: document.getElementById("save"),
   summary: document.getElementById("summary"),
   run: document.getElementById("run"),
-  results: document.getElementById("results"),
-  evidenceModal: document.getElementById("evidence-modal"),
-  evidenceTitle: document.getElementById("evidence-title"),
-  evidenceMeta: document.getElementById("evidence-meta"),
-  evidenceQuote: document.getElementById("evidence-quote"),
-  evidenceFull: document.getElementById("evidence-full"),
+  runTitle: document.getElementById("run-title"),
+  runSub: document.getElementById("run-sub"),
+  since: document.getElementById("since"),
+  sinceValue: document.getElementById("since-value"),
 };
 
 let data = { nace: null, sizes: null, regions: null };
@@ -146,6 +144,11 @@ async function boot() {
   saved = await loadIcp();
   draft = clone(saved);
   renderSummary();
+
+  // Asked once on load and then only while something is running: it fills
+  // the timer, and it picks a run back up if the page was reloaded while
+  // one was going.
+  refreshRun();
 
   // The panel can be opened before the fetches land; redraw whatever
   // view is showing rather than leaving it empty.
@@ -295,162 +298,165 @@ el.cancel.addEventListener("click", () => {
   go(view.name, view.division);
 });
 
-el.run.addEventListener("click", loadResults);
-document.addEventListener("click", (event) => {
-  const link = event.target.closest("[data-snapshot]");
-  if (link) {
-    event.preventDefault();
-    showEvidence(link.dataset.snapshot, link.dataset.quote, link.dataset.label);
-  }
-  if (event.target.closest("[data-close-evidence]")) closeEvidence();
-});
+/* the run --------------------------------------------------------------- */
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeEvidence();
-});
+// Polled while a run is going. Kept in a variable so a second press, or a
+// reload landing on a run already in progress, does not start a second loop
+// asking the same question twice a second.
+let watching = null;
+let startedAt = null;
 
-async function showEvidence(snapshotId, quote, label) {
-  el.evidenceModal.setAttribute("aria-hidden", "false");
-  el.evidenceModal.classList.add("is-open");
-  el.evidenceTitle.textContent = label || "Archivovaná stránka";
-  el.evidenceMeta.textContent = `Snapshot #${snapshotId} · načítám úryvek`;
-  el.evidenceQuote.textContent = "Načítám důkaz…";
-  el.evidenceFull.href = `/api/snapshot/${encodeURIComponent(snapshotId)}`;
+el.run.addEventListener("click", startRun);
+
+async function startRun() {
+  if (el.run.dataset.busy === "1") return;
+  setRunning("Spouštím…");
 
   try {
-    const response = await fetch(el.evidenceFull.href);
+    const response = await fetch("/api/run", { method: "POST" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const text = await response.text();
-    el.evidenceQuote.textContent = excerpt(text, quote);
-    el.evidenceMeta.textContent = `Snapshot #${snapshotId} · úryvek archivované stránky`;
+    applyState(await response.json());
   } catch (error) {
-    el.evidenceQuote.textContent = "Archivovanou stránku se nepodařilo načíst.";
-    console.error("Could not load evidence", error);
+    failRun("Běh se nepodařilo spustit — běží API?");
+    console.error("Could not start the run", error);
   }
 }
 
-function closeEvidence() {
-  if (!el.evidenceModal.classList.contains("is-open")) return;
-  el.evidenceModal.classList.remove("is-open");
-  el.evidenceModal.setAttribute("aria-hidden", "true");
+// The subprocess reports nothing back on its own, so the page asks. Two
+// seconds: a run takes minutes, and the only thing a shorter interval buys
+// is a busier log.
+function watch() {
+  if (watching) return;
+  watching = setInterval(refreshRun, 2000);
 }
 
-function excerpt(text, quote) {
-  const cleanText = text.replace(/\s+/g, " ").trim();
-  const cleanQuote = (quote || "").replace(/\s+/g, " ").trim();
-  const position = cleanQuote && cleanQuote !== "..." ? cleanText.indexOf(cleanQuote) : -1;
-  if (position < 0) return cleanText.slice(0, 520) + (cleanText.length > 520 ? "…" : "");
-
-  const start = Math.max(0, position - 180);
-  const end = Math.min(cleanText.length, position + cleanQuote.length + 260);
-  return `${start ? "…" : ""}${cleanText.slice(start, end)}${end < cleanText.length ? "…" : ""}`;
+function stopWatching() {
+  clearInterval(watching);
+  watching = null;
 }
 
-async function loadResults() {
-  el.run.disabled = true;
-  el.results.innerHTML = '<p class="results-status">Načítám výsledky…</p>';
-
+async function refreshRun() {
   try {
-    const response = await fetch("/api/results");
+    const response = await fetch("/api/run");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const payload = await response.json();
-    if (!Array.isArray(payload.companies)) {
-      throw new Error("Invalid results format");
-    }
-    renderResults(payload);
+    applyState(await response.json());
   } catch (error) {
-    el.results.innerHTML = '<p class="results-status results-error">Výsledky nejsou dostupné</p>';
-    console.error("Could not load results", error);
-  } finally {
-    el.run.disabled = false;
+    // A failed poll is not a failed run - the server may be restarting
+    // under --reload. Keep the interval and try again.
+    console.error("Could not read the run state", error);
   }
 }
 
-function renderResults(payload) {
-  const companies = payload.companies.slice(0, 5);
-  if (!companies.length) {
-    el.results.innerHTML = '<p class="results-status">Poslední běh nemá žádné firmy</p>';
+function applyState(state) {
+  renderSince(state.last_run);
+
+  if (state.running) {
+    startedAt = state.started_at ? new Date(state.started_at) : startedAt || new Date();
+    setRunning(runningFor());
+    watch();
     return;
   }
 
-  el.results.innerHTML = `
-    <div class="results-head">
-      <span>Poslední běh</span>
-      <span>${escapeHtml(payload.generated_at || "")}</span>
-    </div>
-    ${companies.map((company, index) => resultCard(company, index + 1)).join("")}`;
+  stopWatching();
+
+  // Nothing was started from this page and nothing is going: the idle
+  // screen, whatever happened before it.
+  if (el.run.dataset.busy !== "1") {
+    setIdle();
+    return;
+  }
+
+  if (state.returncode === 0) {
+    // The week is the result of the run, so the run ends by showing it.
+    setRunning("Hotovo — otevírám týden…");
+    window.location.href = "/week/";
+    return;
+  }
+
+  // The code itself is not shown: a killed process reports 4294967295 on
+  // Windows, which tells the salesperson nothing the log does not say
+  // better.
+  failRun("Běh selhal — podrobnosti v /api/run/log");
 }
 
-function resultCard(company, rank) {
-  const fit = company.fit || {};
-  const contact = company.contact || {};
-
-  return `
-    <article class="result-card">
-      <div class="result-rank">0${rank}</div>
-      <div class="result-main">
-        <h2>${escapeHtml(company.name || company.ico || "Bez názvu")}</h2>
-        <p class="result-ico">IČO ${escapeHtml(company.ico || "—")}</p>
-        <section class="result-section">
-          <h3>FIT</h3>
-          <div class="result-fit">
-            <span>Velikost: ${escapeHtml(fit.size || "neznámá")}</span>
-            <span>NACE: ${escapeHtml(fit.nace || "neznámý")}</span>
-            <span>${fit.distance_km == null ? "Vzdálenost neznámá" : `Vzdálenost: ${escapeHtml(String(fit.distance_km))} km`}</span>
-          </div>
-        </section>
-        ${renderSignals("NOW", company.now, formatNowSignal)}
-        ${renderSignals("PAIN", company.pain, formatPainSignal)}
-        ${renderContact(contact)}
-      </div>
-    </article>`;
+function setRunning(label) {
+  el.run.dataset.busy = "1";
+  // Cleared here and not only in setIdle(): starting again after a failed
+  // run has to stop looking like the failure it is replacing.
+  el.run.dataset.failed = "0";
+  el.run.setAttribute("aria-busy", "true");
+  el.runTitle.textContent = "Běh probíhá";
+  el.runSub.textContent = label;
 }
 
-function renderSignals(title, signals, formatter) {
-  if (!Array.isArray(signals) || !signals.length) return "";
-  return `
-    <section class="result-section">
-      <h3>${title}</h3>
-      <ul class="result-signals">${signals.map(formatter).join("")}</ul>
-    </section>`;
+function setIdle() {
+  el.run.dataset.busy = "0";
+  el.run.removeAttribute("aria-busy");
+  el.run.dataset.failed = "0";
+  el.runTitle.textContent = "Spustit běh";
+  el.runSub.textContent = "Najde firmy s důvodem volat tento týden";
 }
 
-function formatNowSignal(signal) {
-  return `<li><span>${escapeHtml(signal.kind || "Událost")}</span>${signal.date ? ` · ${escapeHtml(signal.date)}` : ""}${claimLink(signal)}</li>`;
+function failRun(message) {
+  stopWatching();
+  el.run.dataset.busy = "0";
+  el.run.dataset.failed = "1";
+  el.run.removeAttribute("aria-busy");
+  el.runTitle.textContent = "Spustit běh";
+  el.runSub.textContent = message;
 }
 
-function formatPainSignal(signal) {
-  const state = signal.state || "inference";
-  return `<li><span>${escapeHtml(signal.claim || "Signál")}</span><em class="claim-state ${state}">${escapeHtml(state)}</em>${signal.quote && signal.quote !== "..." ? `<q>${escapeHtml(signal.quote)}</q>` : ""}${claimLink(signal)}</li>`;
+function runningFor() {
+  if (!startedAt) return "Probíhá…";
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `Probíhá ${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `Probíhá ${minutes} min ${seconds % 60} s`;
 }
 
-function claimLink(signal) {
-  if (signal.snapshot_id == null) return "";
-  const quote = signal.quote && signal.quote !== "..." ? signal.quote : "";
-  const label = signal.claim || signal.kind || "Archivovaná stránka";
-  return ` <button class="evidence-link" type="button" data-snapshot="${escapeHtml(signal.snapshot_id)}" data-quote="${escapeHtml(quote)}" data-label="${escapeHtml(label)}">podrobnosti</button>`;
+/* time since the last run ------------------------------------------------ */
+
+let lastRunAt = null;
+
+function renderSince(lastRun) {
+  lastRunAt = lastRun && lastRun.generated_at ? new Date(lastRun.generated_at) : null;
+  drawSince();
 }
 
-function renderContact(contact) {
-  if (!contact.name && !contact.email && !contact.phone) return "";
-  const channels = [contact.email, contact.phone].filter(Boolean).map(escapeHtml).join(" · ");
-  return `
-    <section class="result-section result-contact">
-      <h3>CONTACT</h3>
-      <p><b>${escapeHtml(contact.name || "Kontakt")}</b>${contact.role ? ` · ${escapeHtml(contact.role)}` : ""}</p>
-      ${channels ? `<p>${channels}</p>` : ""}
-    </section>`;
+// Redrawn on a timer of its own, because the number changes while nothing
+// else on the page does. A minute is the smallest unit shown, so a minute
+// is often enough to never be visibly stale.
+setInterval(drawSince, 30000);
+
+function drawSince() {
+  if (!lastRunAt || Number.isNaN(lastRunAt.getTime())) {
+    el.since.hidden = true;
+    return;
+  }
+  el.since.hidden = false;
+  el.sinceValue.textContent = elapsed(lastRunAt);
+  el.since.title = `Poslední dokončený běh: ${lastRunAt.toLocaleString("cs-CZ")}`;
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "'": "&#39;",
-    '"': "&quot;",
-  }[character]));
+// "před" takes the instrumental, so it is dnem/dny here and not the
+// nominative den/dny/dní a counter would use. One is dnem, everything
+// above it is dny. Hours and minutes are abbreviated, which sidesteps the
+// same question for them.
+function elapsed(when) {
+  const total = Math.max(0, Math.floor((Date.now() - when) / 1000));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+
+  if (total < 60) return "právě teď";
+
+  const parts = [];
+  if (days) parts.push(`${days} ${days === 1 ? "dnem" : "dny"}`);
+  if (hours) parts.push(`${hours} h`);
+  // Minutes are noise next to days, and the timer is a freshness cue, not
+  // a stopwatch.
+  if (minutes && !days) parts.push(`${minutes} min`);
+  return `před ${parts.join(" ")}`;
 }
 
 // The footer follows the edits, not the screen: once something is
@@ -839,19 +845,20 @@ function summaryRegions() {
   return `${draft.regions.size} krajů · ${nf.format(sumSelected(data.regions, draft.regions))} firem`;
 }
 
+// The subtitle of the filters tile: what the next run would use. It
+// describes `saved`, never `draft` - the tile has to keep saying what the
+// pipeline would do while somebody is editing something else inside the
+// panel. Written short on purpose; the panel is one click away for the
+// full list.
 function renderSummary() {
-  // The dot on the gear says the same thing this line does, so the two
-  // are set together. Both describe `saved`, which changes only here and
-  // at boot - not on every checkbox inside the panel.
-  el.gear.dataset.active = countActive(saved) ? "1" : "0";
-
   if (!countActive(saved)) {
-    el.summary.textContent = "";
+    el.summary.textContent = "Celá ČR, všechny obory a velikosti";
     return;
   }
+
   const parts = [];
   if (saved.nace.size) parts.push(`<b>${saved.nace.size}</b> oborových kódů`);
-  if (saved.sizes.size) parts.push(`<b>${saved.sizes.size}</b> velikostních pásem`);
+  if (saved.sizes.size) parts.push(`<b>${saved.sizes.size}</b> pásem velikosti`);
   if (saved.regions.size) parts.push(`<b>${saved.regions.size}</b> krajů`);
   if (saved.km) parts.push(`<b>${saved.km} km</b> od ${saved.from || "—"}`);
   el.summary.innerHTML = parts.join(" · ");
