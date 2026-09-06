@@ -1,0 +1,36 @@
+# The build context is sent to the daemon before anything is built, so
+# the point of this file is not tidiness - it is that data/ alone is over
+# 780 MB and would be uploaded on every single build.
+data/
+docs/
+
+# Credentials never belong in an image. OPENAI_API_KEY is passed with
+# -e at run time; see the header of the Dockerfile.
+.env
+.env.*
+
+.git/
+.gitignore
+.claude/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# One-off measurement scripts and their output. They are how the numbers
+# in docs/reseni-log.md were arrived at, not part of a run.
+*_probe.py
+*_probe_out.txt
+funnel_probe.py
+probe_urls.py
+*.log
+
+Dockerfile
+.dockerignore
+README*
+CLAUDE.md

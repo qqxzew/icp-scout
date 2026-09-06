@@ -1,0 +1,31 @@
+# Pinned, not ranged: this is a prototype meant to be run once on a
+# demonstration machine, and a source that changes its parser between the
+# rehearsal and the presentation is a worse trade than an old version.
+#
+# Everything else the pipeline needs is in the standard library on
+# purpose - the XLSX of EU subsidies is read with zipfile and re rather
+# than openpyxl, and the four ARES endpoints are plain GETs.
+#
+# Python 3.14 (developed and run on 3.14.2).
+
+# The interface: api/main.py serves both the ICP screens and /api.
+fastapi==0.135.2
+uvicorn==0.30.6
+
+# Request bodies of POST /api/icp. Comes with fastapi anyway, named here
+# because api/main.py imports it directly.
+pydantic==2.12.5
+
+# Every source that goes out to the network: ares, ares_notifications,
+# res_bulk's codebooks, website, contacts, sbirka, nen, certificates,
+# dotace_eu, mpsv.
+requests==2.32.5
+
+# pipeline/llm/client.py. The model is called over the API; nothing here
+# is trained.
+openai==1.109.1
+
+# pipeline/sources/sbirka.py: turnover out of a PDF účetní závěrka, for
+# the companies whose statement has a text layer at all. Only ever fills
+# the dossier - it takes no part in the selection.
+pypdf==6.16.1
