@@ -44,9 +44,10 @@ from collections import Counter
 from pipeline.evidence.archive import Archive
 from pipeline.evidence.verify import check_many_against_any
 from pipeline.llm.client import LLM, usage_summary
+from pipeline.llm.prompts.rules import QUOTE_RULES
 
 PROMPT_NAME = "turnover_web"
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 
 # Deliberately generous - this only nominates a page for reading, and a
 # missed candidate is a company we never look at. Precision is the
@@ -84,9 +85,8 @@ Pravidla:
   korun", "160 až 180 milionů Kč"). Nepřevádět, nezaokrouhlovat.
 - "currency" podle textu: CZK, EUR, USD.
 - Pokud text žádný obrat neuvádí, vrať prázdné pole findings.
-- Každý nález nese DOSLOVNOU citaci v "quote", zkopírovanou znak po \
-  znaku z předloženého textu. Citaci nikdy nezkracuj třemi tečkami, \
-  nespojuj nesousedící věty a nepřidávej uvozovky navíc."""
+
+""" + QUOTE_RULES
 
 SCHEMA = {
     "type": "object",

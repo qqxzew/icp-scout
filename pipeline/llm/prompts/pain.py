@@ -78,13 +78,21 @@ from pipeline.evidence.archive import Archive
 from pipeline.evidence.verify import check_against_any, is_absence_claim
 from pipeline.llm.client import LLM, usage_summary
 from pipeline.llm.prompts.production_mode import TRUSTED_SITE_STATUS, gather_documents, user_prompt
+from pipeline.llm.prompts.rules import QUOTE_RULES
 from pipeline.scoring.select import WEBSITES, load_jsonl
 from pipeline.sources.mpsv import load as load_vacancies
 
 PROMPT_NAME = "pain"
 # 2: the prompt stopped accepting statements about what the text does
-# NOT say. See the ABSENCE note below and evidence/verify.py.
-PROMPT_VERSION = 2
+#    NOT say. See the ABSENCE note below and evidence/verify.py.
+# 3: the three signs were too wide and the card filled with boilerplate.
+#    Measured on CENTES: 21 findings, of which six were one platitude
+#    about training filed twice under two signs, one was a candidate's
+#    MS Office requirement read as proof of manual data entry, and one
+#    was single-shift work read as proof of scale - a fact arguing the
+#    opposite. Each is now named as a non-finding, and the rule "one
+#    quote proves one sign" is stated rather than assumed.
+PROMPT_VERSION = 3
 
 # The three signs in one line each. SYSTEM below says the same things at
 # length, for the agent that has to find them; this dict is the compact
@@ -105,11 +113,19 @@ pracovních inzerátů stopy tří konkrétních věcí. Firma sama tyto věci \
 nikdy přímo neinzeruje - hledáš nepřímé stopy, ne prohlášení.
 
 1) SCALE (vysoký počet jednotek k rozvržení)
-   Hledej konkrétní čísla: počet strojů, směn, pracovišť, vozidel, \
-   poboček, pozic v inzerátech. Čím víc jednotek firma zmiňuje, tím \
-   složitější má plánovací úlohu. NEHODNOŤ celkový počet zaměstnanců - \
-   ten už máme z registru; zajímá nás cokoli JINÉHO, co se musí \
-   rozvrhovat.
+   Hledej konkrétní čísla: počet strojů, linek, směn, pracovišť, \
+   vozidel, čet, poboček nebo položek v jedné zakázce. Čím víc \
+   jednotek firma zmiňuje, tím složitější má plánovací úlohu. \
+   NEHODNOŤ celkový počet zaměstnanců - ten už máme z registru; \
+   zajímá nás cokoli JINÉHO, co se musí rozvrhovat.
+   NEPOČÍTEJ otevřené pracovní inzeráty jako jednotky. Pět inzerátů \
+   znamená, že firma nabírá pět lidí, ne že rozvrhuje pět jednotek - \
+   nábor sám o sobě není plánovací úloha. Inzerát je dokladem jen \
+   tehdy, když sám popisuje počet ("obsluha 12 lisů", "dispečink 30 \
+   vozidel", "dvousměnný provoz").
+   Údaj, který svědčí PROTI velkému rozvrhování (jednosměnný provoz, \
+   jediné pracoviště, jedna linka), není nález - takový údaj nevracej \
+   vůbec, ani jako úsudek.
 
 2) MANUAL_DATA (ruční přenos dat mezi provozem a systémem)
    Hledej stopy řetězce provoz -> papír/Excel/mistr -> člověk -> \
@@ -118,6 +134,12 @@ nikdy přímo neinzeruje - hledáš nepřímé stopy, ne prohlášení.
    výroby", pozice typu "přípravář výroby", "koordinátor výroby", \
    "administrativní pracovník pro plánování". NEHODNOŤ zmínky o \
    tabletu, čtečce nebo GPS bez ručního zadávání - to dokazuje opak.
+   NEHODNOŤ požadavek na znalost MS Office, Wordu, Excelu nebo \
+   Outlooku v inzerátu. To je běžný požadavek na uchazeče v každé \
+   administrativní pozici v zemi a neříká nic o tom, jestli se výrobní \
+   data přepisují ručně. Excel je stopa až tehdy, když text říká, K \
+   ČEMU se ve výrobě používá ("evidence výroby v Excelu", "výkazy se \
+   přepisují do tabulky").
 
 3) TACIT_KNOWLEDGE (klíčové know-how v jedné hlavě)
    Toto je nejslabší a nejvzácnější stopa - většinou nenajdeš nic, a to \
@@ -125,6 +147,12 @@ nikdy přímo neinzeruje - hledáš nepřímé stopy, ne prohlášení.
    ("zaškolení trvá až rok", "znalosti předávané ústně"), nově vzniklou \
    roli explicitně nahrazující jednoho člověka, nebo přímé přiznání \
    závislosti na jedné osobě.
+   NEHODNOŤ běžné věty o zaučení nového zaměstnance - "zaučení \
+   zkušeným kolegou", "důkladně zaškolíme", "zaškolení zajištěno", \
+   "zapracování zajistíme". Tohle má v inzerátu skoro každá firma v \
+   zemi; je to náborová fráze, ne doklad, že know-how drží jeden \
+   člověk. Nálezem je až konkrétní délka zaškolení, výslovné ústní \
+   předávání, nebo role vzniklá po odchodu konkrétního člověka.
 
 Pravidla pro všechny tři kategorie:
 - Vrať POUZE nálezy, pro které máš oporu v textu - u firmy, kde nic \
@@ -135,14 +163,19 @@ Pravidla pro všechny tři kategorie:
   na jednom člověku" nejsou nálezy - je to prázdný výsledek napsaný \
   slovy. Nepřítomnost signálu se hlásí prázdným polem findings.
 - Každý nález musí tvrdit něco o FIRMĚ, ne o textu, který čteš.
-- Každý nález nese DOSLOVNOU citaci v "quote". Citaci nikdy nezkracuj \
-  třemi tečkami a nikdy nespojuj dvě nesousedící věty do jedné citace - \
-  pokud chceš citovat dvě různé věty, vrať dva samostatné nálezy.
-- Pole "quote" obsahuje POUZE samotný text ze zdroje, BEZ uvozovek na \
-  začátku a na konci - pole samo o sobě už je citace, uvozovky nepřidávej.
-- Pokud tvrzení je tvůj úsudek z kontextu (např. "firma pravděpodobně \
-  spoléhá na jednoho vedoucího"), nastav "quote" na null. I úsudek ale \
-  musí něco tvrdit o firmě - ne o tom, co se v textu nepodařilo najít."""
+- I úsudek musí něco tvrdit o firmě - ne o tom, co se v textu nepodařilo \
+  najít.
+- Jedna citace smí doložit jen JEDEN signál. Když tě táž věta napadne u \
+  dvou signálů, vyber ten, ke kterému sedí líp, a vrať ji jednou. Táž \
+  věta pod dvěma signály není dvojí důkaz, je to jeden důkaz započítaný \
+  dvakrát.
+- Jednu a tutéž skutečnost dokládej jedním nálezem. Když ji v textu \
+  podpírá víc vět, vyber tu nejsilnější - tři různé věty o zaškolení \
+  nejsou tři nálezy, je to jedno zjištění řečené třikrát.
+- Radši méně nálezů. Prodejce si přečte pět silných zjištění; dvacet \
+  slabých znamená, že si nepřečte ani ta silná mezi nimi.
+
+""" + QUOTE_RULES
 
 SCHEMA = {
     "type": "object",

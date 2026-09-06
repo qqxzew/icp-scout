@@ -63,7 +63,7 @@ Run:
 import argparse
 import re
 
-from pipeline.evidence.archive import Archive, UNRELATED, normalize
+from pipeline.evidence.archive import Archive, SUPPORTS, UNRELATED, normalize
 
 # Characters the model uses to typographically mark its own citation -
 # straight, Czech-style „low" / "high", and curly single/double. Checked
@@ -77,6 +77,19 @@ _WRAPPING_QUOTE_CHARS = '"„“”‘’\''
 # adjacent in the source.
 _TRAILING_ELLIPSIS = re.compile(r"(?:\.{2,}|…)\s*$")
 _INTERNAL_ELLIPSIS = re.compile(r"(?:\.{2,}|…)")
+
+# A single closing full stop, and nothing else. Same instinct as the
+# wrapping quote marks above - the model finishes its citation the way a
+# sentence is finished, whether or not the page does. Measured: discard
+# 172 of run 150 was 265 of its 266 characters verbatim and failed on a
+# final "." where the source has a comma.
+#
+# Only ONE character and only a full stop: a comma or a colon at the end
+# of a quote can be real text the model copied correctly, and stripping
+# those would start repairing quotes rather than tolerating punctuation.
+# Two dots or more are an ellipsis and belong to the rule above, so the
+# negative lookbehind keeps this from eating into one.
+_TRAILING_STOP = re.compile(r"(?<!\.)\.\s*$")
 
 
 def _unwrap(quote):
@@ -97,6 +110,12 @@ def find_quote(quote, snapshot_text):
     1. the quote as given
     2. one layer of wrapping quote-mark punctuation stripped - the model
        marks its own citation typographically (see module docstring)
+    2b. a single trailing full stop removed, for the same reason: the
+       model ends its citation like a sentence even where the page runs
+       on. Measured on run 150's discards, one of nine was this and
+       nothing else - 265 of 266 characters verbatim, rejected on a "."
+       the source spells as ",". Never more than one dot, so an ellipsis
+       stays the splice it is.
     3. case-insensitively. TNS SERVIS's discard differed from the source
        by exactly one character: the model wrote "vyvíjíme" where the
        page began a sentence with "Vyvíjíme". 130 characters identical,
@@ -133,6 +152,13 @@ def find_quote(quote, snapshot_text):
         trimmed = _TRAILING_ELLIPSIS.sub("", candidate).rstrip()
         if trimmed != candidate and not _INTERNAL_ELLIPSIS.search(trimmed):
             candidates.append(trimmed)
+
+    # After the ellipsis pass, so a quote ending in "..." is handled as a
+    # truncation rather than losing one of its dots to this.
+    for candidate in list(candidates):
+        without_stop = _TRAILING_STOP.sub("", candidate).rstrip()
+        if without_stop != candidate:
+            candidates.append(without_stop)
 
     for candidate in candidates:
         if normalize(candidate) in normalized_text:
@@ -187,6 +213,72 @@ def states_absence(value):
     return bool(_ABSENCE.search(text) or _ABSENCE_VERB.search(text))
 
 
+# ---------------------------------------------------------------------------
+# Evidence that argues the other way
+# ---------------------------------------------------------------------------
+#
+# A quote can be genuinely on the page, genuinely about the company, and
+# still be evidence AGAINST the sign it was filed under. Single-shift
+# working is the one case where that is decidable without reading the
+# context: sign 1 is "a high number of units to schedule in time", and a
+# company running one shift has fewer units to schedule, not more. It
+# reached a card three times - "Jednosměnný provoz", "Práce na jednu
+# směnu." - twice marked `supports` by the relevance judge, which is why
+# this is code and not another line in a prompt.
+#
+# Deliberately the ONLY rule of its kind here, and deliberately scoped to
+# pain:scale. Everything else that looked like boilerplate turned out to
+# depend on context that a pattern cannot see: "Výkresy zasílejte na:
+# vypocty@betonpres.cz" is mostly an e-mail address and is also a real
+# trace of a manual process, and "PO ZAUČENÍ případný postup na pozici
+# zástupce vedoucího" is a training platitude wrapped around a new
+# deputy role, which is sign 4 itself. Those belong to the second-layer
+# judge in llm/prompts/relevance.py, which reads meaning; this one line
+# is here because no amount of surrounding text makes one shift into
+# many units.
+_SINGLE_SHIFT = re.compile(r"(?i)(jednosměnn\w*|jedn[uú]\s*směn\w*|jedna\s*směn\w*)")
+
+# The second case, and the last one: a training platitude offered as
+# proof that key know-how lives in one person's head. "Zaučení zkušeným
+# kolegou", "Při nástupu vás důkladně zaškolíme" - every second Czech job
+# ad says this, so it separates no company from any other, which is the
+# §13 hole ("the sign fires at 45 % of companies") in one line.
+#
+# Both the agent's prompt and the judge's prompt name this case and ask
+# for it to be left out. Both still let it through, which is precisely
+# when a rule belongs in code: measured across the archive's 20 quoted
+# tacit_knowledge claims, seven were this.
+_TRAINING = re.compile(r"(?i)(zauč|zaškol|zaprac|zácvik|proškol)")
+# What makes a mention of training a finding rather than a platitude: a
+# stated duration, knowledge passed on by mouth, or a role defined
+# against a specific person. Measured on the same 20: this keeps "PO
+# ZAUČENÍ případný postup na pozici zástupce vedoucího" - a deputy role
+# appearing, which is sign 4 itself - and "První týdny u nás...", while
+# dropping the seven that say only that training exists.
+_TRAINING_SPECIFIC = re.compile(
+    r"(?i)(\d|měsíc\w*|rok\w*|týdn\w*|ústně|ústní|předáván\w*|"
+    r"zástupc\w*|nástupc\w*|jedin\w*|odchod\w*)")
+
+
+def argues_against(kind, quote):
+    """Whether a quote fails the sign it was filed under, regardless of context.
+
+    Two rules only, both scoped to one sign, both measured. Everything
+    else that looked like boilerplate turned out to need the context a
+    pattern cannot see, and belongs to the judge in
+    llm/prompts/relevance.py instead.
+    """
+    if not quote:
+        return False
+    if kind == "pain:scale":
+        # One shift is fewer units to schedule, not more. No surrounding
+        # text changes that, which is why it is decidable here.
+        return bool(_SINGLE_SHIFT.search(quote))
+    if kind == "pain:tacit_knowledge":
+        return bool(_TRAINING.search(quote) and not _TRAINING_SPECIFIC.search(quote))
+    return False
+
+
 def is_absence_claim(value, quote):
     """A quoteless statement that the evidence is not there - never evidence.
 
@@ -227,55 +319,165 @@ def counts_as_evidence(claim_row):
     scoring/card.py - so a claim can never be scored in one place and
     hidden in the other.
     """
-    return not unrelated(claim_row) and not is_absence_claim(claim_row["value"],
-                                                             claim_row["quote"])
+    return (not unrelated(claim_row)
+            and not is_absence_claim(claim_row["value"], claim_row["quote"])
+            and not argues_against(claim_row["kind"], claim_row["quote"]))
+
+
+def _newest_pass(rows):
+    """One agent's latest reading of one company replaces its earlier ones.
+
+    Deduplicating on the quote is not enough, because the model does not
+    quote identically twice: re-running pain.py over CENTES produced
+    "Zaučení zkušeným kolegou" one week and "důkladné zaškolení
+    zkušeným kolegou" the next - one platitude, two rows, no shared key.
+    Left alone, a card grows every time an agent is re-run, and the
+    growth is the same finding reworded.
+
+    So an agent's newest pass over a company wins outright: for each
+    kind family (`pain`, `production_mode`, ...), only the claims from
+    the highest run_id in which that family appears for this company are
+    kept. Re-running an agent then corrects a card instead of adding to
+    it, which is what "re-run" is supposed to mean - and it is what
+    makes the prompt fixes above actually reach the salesperson, rather
+    than sitting underneath the output of the prompt they replaced.
+
+    Per family, not globally: agents run at different times, and
+    production_mode's latest pass must not delete pain's findings just
+    because it happened later.
+
+    Per company, not per run: a company the newest pass never looked at
+    keeps everything it had. That preserves the case archive.claims() is
+    unfiltered for in the first place - a vacancy that has since left
+    MPSV's export still has its verified claim, because no later pass
+    reconsidered that company at all.
+
+    Rows with no run_id (hand-built in a test) are kept as they are.
+    """
+    newest = {}
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else ()
+        if "run_id" not in keys or row["run_id"] is None:
+            continue
+        family = row["kind"].split(":", 1)[0]
+        newest[family] = max(newest.get(family, 0), row["run_id"])
+
+    kept = []
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else ()
+        if "run_id" not in keys or row["run_id"] is None:
+            kept.append(row)
+            continue
+        if row["run_id"] == newest[row["kind"].split(":", 1)[0]]:
+            kept.append(row)
+    return kept
+
+
+def _dedup_key(quote):
+    """The form two quotes have to share to count as the same sentence.
+
+    Normalised and case-folded like everything else here, plus the final
+    full stop removed - for exactly the reason find_quote() tolerates
+    one. Two runs of the same agent quote the same line, one of them
+    ending the sentence and one not, and both verify successfully
+    because both really are substrings of the page. Without this they
+    are two keys and the card prints the line twice, which is what it
+    did with CENTES's "Při nástupu vás důkladně zaškolíme".
+    """
+    return _TRAILING_STOP.sub("", normalize(quote)).rstrip().lower()
+
+
+def _preference(row):
+    """Sort key deciding which of several claims on one quote is kept.
+
+    Lower is better, because the winner is taken with min().
+
+    1. a claim the relevance judge confirmed beats one nobody judged -
+       it is the only signal here that anything looked at whether the
+       sentence proves what it was filed under.
+    2. a specific kind (`pain:scale`) beats a flat one (`pain`), which
+       is the old kind-split case this function already handled.
+    3. the newest claim wins, because it came from the newest version of
+       the agent - the one whose prompt was last corrected.
+    """
+    keys = row.keys() if hasattr(row, "keys") else ()
+    judged_first = 0 if ("relevance" in keys and row["relevance"] == SUPPORTS) else 1
+    specific_first = 0 if ":" in row["kind"] else 1
+    # A row built by hand in a test carries no id; ordering by insertion
+    # is then as good an answer as any, and it must not raise.
+    newest_first = -row["id"] if "id" in keys else 0
+    return (judged_first, specific_first, newest_first)
 
 
 def usable(rows):
     """Out of one company's claims, the ones that may be shown and scored.
 
-    Everything counts_as_evidence() rejects, plus one thing only
-    visible with the whole list in hand: a statement stored twice by two
-    versions of the same agent. pain.py used to file every finding under
-    the flat kind `pain` and now files it under `pain:<sign>`, so an
-    archive written across that change holds both rows - the same
-    quote twice, one of them carrying which sign it is.
-    The specific one wins and the flat one is dropped rather than
-    deleted from the archive: it was really produced and the record of
-    what this pipeline did stays intact, it just stops being printed
-    twice on the same card.
+    Everything counts_as_evidence() rejects, plus the duplicates - which
+    are only visible with the whole list in hand, and which arrive by
+    three different routes:
 
-    Written generally rather than as a `pain` special case because the
-    same thing will happen to the next agent whose kinds get split.
+    ONE QUOTE, RE-RUN. archive.claims() is not filtered by run, on
+    purpose: a card shows what is known about a company, not what one
+    run happened to look at, and a vacancy that has since left MPSV's
+    export still has its verified claim in the archive. The cost is that
+    running an agent twice files the same sentence twice, worded
+    differently each time - "firma vyrábí desítky druhů dřevěných obalů"
+    and "výroba desítek druhů dřevěných obalů, dodávky po kamionech",
+    both quoting the same line. Measured on the five companies of run
+    147 after a single re-run: 16-33 % of their evidence was this, and
+    it compounds with every further run.
 
-    Matched on the QUOTE, not on the wording of the statement. The two
-    versions of the agent summarise the same sentence differently -
-    "firma má výrobní haly o ploše 8.906 m2" and "výrobní plocha 8.906
-    m2 ve dvou halách" - so comparing statements finds no duplicate at
-    all. The quote is the evidence and it is identical by construction:
-    both were verified against the same archived page.
+    ONE QUOTE, TWO SIGNS. The agent may file the same sentence under two
+    signs - CENTES's "Zaučení zkušeným kolegou" arrived as both
+    tacit_knowledge and manual_data. At most one of those is right, and
+    which one cannot be decided here, so the claim is kept once under
+    the sign _preference() picks and the other is dropped rather than
+    printed as a second finding.
+
+    ONE QUOTE, TWO KIND FORMATS. The original case: pain.py used to file
+    findings under the flat kind `pain` and now uses `pain:<sign>`, so an
+    archive written across that change holds both.
+
+    All three are the same defect from the card's point of view - the
+    salesperson reads one sentence twice - so all three are one rule:
+    a quote may support one printed finding. Nothing is deleted from the
+    archive; the record of what this pipeline did stays intact, the same
+    sentence just stops being counted and printed more than once.
+
+    Matched on the QUOTE, never on the wording of the statement. Two
+    runs summarise one sentence differently, so comparing statements
+    finds no duplicate at all; the quote is the evidence and is
+    identical by construction, both having been verified against the
+    same archived text. Normalised the same way the archive stores text,
+    and case-folded, because "Zaučení zkušeným kolegou" and "zaučení
+    zkušeným kolegou" are one sentence quoted twice.
+
+    Inferences carry no quote, so they are grouped by their statement
+    instead - the only thing they have. Two inferences with the same
+    wording are the same inference; two with different wording are kept
+    apart, which is the conservative direction for a claim that was
+    never checked against anything.
     """
-    def family(row):
-        return row["kind"].split(":", 1)[0]
+    rows = _newest_pass(rows)
 
-    specific_quotes = {(family(row), row["quote"]) for row in rows
-                       if ":" in row["kind"] and row["quote"]}
-    # Claims with no quote are inferences, and two inferences with the
-    # same family are not the same statement - those still have to match
-    # on the text itself.
-    specific_values = {(family(row), row["value"]) for row in rows
-                       if ":" in row["kind"] and not row["quote"]}
-
-    kept = []
+    groups = {}
     for row in rows:
         if not counts_as_evidence(row):
             continue
-        if ":" not in row["kind"]:
-            if row["quote"] and (row["kind"], row["quote"]) in specific_quotes:
-                continue
-            if not row["quote"] and (row["kind"], row["value"]) in specific_values:
-                continue
-        kept.append(row)
+        if row["quote"]:
+            key = ("quote", _dedup_key(row["quote"]))
+        else:
+            # Family, not full kind: an inference filed under `pain` and
+            # the same sentence under `pain:scale` are one inference.
+            key = ("value", row["kind"].split(":", 1)[0],
+                   normalize(row["value"] or "").lower())
+        groups.setdefault(key, []).append(row)
+
+    kept = [min(group, key=_preference) for group in groups.values()]
+    # Back into the order the caller handed them in, so a card keeps the
+    # archive's own newest-first ordering rather than dict insertion.
+    order = {id(row): index for index, row in enumerate(rows)}
+    kept.sort(key=lambda row: order[id(row)])
     return kept
 
 

@@ -49,6 +49,7 @@ from collections import Counter
 from pipeline.evidence.archive import Archive, digest, normalize
 from pipeline.evidence.verify import check_against_any
 from pipeline.llm.client import LLM, usage_summary
+from pipeline.llm.prompts.rules import QUOTE_RULES
 from pipeline.scoring.select import WEBSITES, load_jsonl
 from pipeline.sources.mpsv import load as load_vacancies, texts as vacancy_texts
 
@@ -65,7 +66,7 @@ from pipeline.sources.mpsv import load as load_vacancies, texts as vacancy_texts
 TRUSTED_SITE_STATUS = {"proven"}
 
 PROMPT_NAME = "production_mode"
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 
 # Keeps cost predictable and low - gpt-4.1-mini is priced by the token.
 # 2500 was a guess and it was measured wrong: the median harvested page
@@ -131,10 +132,8 @@ Pravidla:
   automaticky pravdivější, posuzuj obsah, ne zdroj.
 - Pokud firma na různých místech tvrdí obojí (zakázková i sériová), \
   vrať OBA nálezy - to je platná a častá odpověď, ne rozpor k vyřešení.
-- Každý nález musí nést DOSLOVNOU citaci z textu ve "quote". Pokud \
-  citaci nemáš (jde o tvůj úsudek z kontextu, ne z konkrétní věty), \
-  nastav "quote" na null - nikdy si citaci nevymýšlej ani ji nezkracuj \
-  třemi tečkami."""
+
+""" + QUOTE_RULES
 
 SCHEMA = {
     "type": "object",

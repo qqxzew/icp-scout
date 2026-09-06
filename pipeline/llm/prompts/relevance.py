@@ -48,7 +48,16 @@ from pipeline.llm.client import LLM, usage_summary
 from pipeline.llm.prompts.pain import SIGNS
 
 PROMPT_NAME = "relevance"
-PROMPT_VERSION = 1
+# 2: the judge already knew single-shift working argues against sign 1
+#    and still passed it twice, because "when in doubt, supports=true"
+#    outweighed it. The cases measured as boilerplate are now named,
+#    with that tie-break explicitly switched off for them.
+# 3: version 2 overshot - the judge read the exception list as "be
+#    stricter" and rejected 8 of 8 findings on one company, among
+#    them job-duty lines that ARE the chain being looked for. The
+#    list is now marked as four named exceptions, and the duties
+#    case is spelled out as supports=true.
+PROMPT_VERSION = 3
 
 SYSTEM = """Rozhoduješ, zda ověřená citace ze zdroje skutečně dokládá \
 konkrétní signál, pod kterým byla uložena.
@@ -66,6 +75,29 @@ Pravidla:
 - Odpověz supports=false jen tehdy, když je citace zjevně mimo signál. \
   Pokud váháš, odpověz supports=true - slabý doklad si obchodník \
   přebere sám, chybějící doklad už neuvidí.
+- Následující čtyři případy dokladem NEJSOU, a jen na ně pravidlo "když \
+  váháš, supports=true" neplatí. Mimo tento krátký seznam platí dál - \
+  není to pokyn být přísnější celkově, je to čtyři jmenované výjimky:
+  * běžné náborové fráze o zaučení nového zaměstnance ("zaučení \
+    zkušeným kolegou", "důkladně zaškolíme", "zaškolení zajištěno"). \
+    Tohle má v inzerátu skoro každá firma v zemi, takže to nerozlišuje \
+    žádnou od žádné. Signálem je až konkrétní délka zaškolení, výslovné \
+    ústní předávání znalostí, nebo role vzniklá po odchodu konkrétního \
+    člověka - pokud citace tohle obsahuje, supports=true.
+  * POŽADAVKY na uchazeče, které nevypovídají o firmě: znalost MS \
+    Office, Wordu či Excelu, spolehlivost, samostatnost, logické \
+    myšlení, řidičský průkaz, praxe v oboru. Pozor, tohle je úzká \
+    výjimka na osobní vlastnosti a obecné dovednosti - NEPLATÍ na popis \
+    pracovní NÁPLNĚ. Věty o tom, co ten člověk bude dělat se \
+    zakázkami, daty, výkazy nebo dokumentací ("zajišťování a \
+    administrace objednávek pro výrobu", "koordinace termínů zakázek", \
+    "vedení výrobní dokumentace") jsou naopak přesně ten řetězec, který \
+    hledáme - u těch odpověz supports=true.
+  * samotný kontaktní údaj - jméno, funkce, telefon, e-mail. Kontakt na \
+    technologa není doklad ručního přenosu dat. Pokud ale věta popisuje, \
+    CO se na ten kontakt posílá ("výkresy zasílejte na ..."), doklad to \
+    je.
+  * údaj, který svědčí PROTI signálu, pod kterým je uložen.
 - Do "why" napiš jednu krátkou větu česky, proč ano nebo ne.
 - Vrať právě jeden verdikt ke každému číslu, které dostaneš."""
 
