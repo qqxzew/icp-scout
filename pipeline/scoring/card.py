@@ -421,6 +421,13 @@ def build(ico, archive, companies=None, websites=None, contacts=None,
             "email": found.get("email"),
             "phone": found.get("phone"),
             "quote": found.get("quote"),
+            # Why there is no channel, when contacts.py had a reason for
+            # withholding one rather than simply not finding it - two
+            # directors of the same name, a surname that is also the
+            # company's. Without this the card prints an empty line and
+            # the salesperson reads a gap in the data instead of a
+            # warning about which person the page is naming.
+            "note": found.get("note"),
             "source": "web" if (found.get("email") or found.get("phone")) else None,
             # The page this channel was read from - contacts.py harvests
             # one team/contact page per company, so every person on it
@@ -657,6 +664,17 @@ def distance_note(geo):
         return ""
     origin = geo.get("from") or "Plzeň"
     note = f"{geo['distance_km']:.0f} km (výchozí bod {origin})"
+
+    # The radius admits a company on its nearest address, so a card that
+    # stops at that number can promise 87 km to a company whose plant is
+    # 234 away. When the register puts an establishment well outside the
+    # radius, the card says so and names it - the decision whether that
+    # drive is worth making belongs to the salesperson, but only if they
+    # are told there is one.
+    if geo.get("far_site_km") is not None:
+        where = geo.get("far_site")
+        note += (f" — pozor, provozovna{f' {where}' if where else ''} je "
+                 f"{geo['far_site_km']:.0f} km")
     if geo.get("limit_km") and geo.get("preferred") is False:
         # Said, not enforced: the ICP's word is "preferovaně". The
         # ordering already put this company behind the nearer ones; the
@@ -754,8 +772,15 @@ def render(card):
             # channel is something we had to find on a page and often
             # did not. Printing them on one line would let a missing
             # channel look like a missing person.
+            # An empty channel and a channel deliberately withheld look
+            # identical on a card, and they mean opposite things: one is
+            # "we did not find one", the other is "we found one and it
+            # may belong to the other person of this name". Dřevovýroba
+            # VLK has two MARTIN KÝZLs, and a blank line there reads as
+            # a gap in the data rather than as the warning it is.
             out.append(row("  ↳ kanál z webu",
-                           person.get("email") or person.get("phone") or "",
+                           person.get("email") or person.get("phone")
+                           or person.get("note") or "",
                            card["website"].get("domain") or ""))
     else:
         out.append(row("Jednatel", "", vr))
@@ -987,7 +1012,10 @@ def for_web(card):
         # holds for any company's team page, not just this one.
         channel = person.get("email") or person.get("phone")
         contact_rows.append({
-            "label": "kanál z webu", "sub": True, "value": channel,
+            "label": "kanál z webu", "sub": True,
+            # Same reason as the terminal card above: a withheld channel
+            # has to say why, or it reads as missing data.
+            "value": channel or person.get("note"),
             "source": fragment_url(person.get("page_url"), channel) if channel else None,
         })
     if not contact_rows:

@@ -251,6 +251,22 @@ def parse_vr(data):
                 "name": full_name(person),
                 "role": member.get("clenstvi", {}).get("funkce", {}).get("nazev"),
                 "since": member.get("datumZapisu"),
+                # THE ONLY THING THAT TELLS TWO NAMESAKES APART, and the
+                # register gives it away for free. Dřevovýroba VLK has two
+                # MARTIN KÝZLs - born 1969 (the owner) and 2001 (the
+                # jednatel) - and without this field the pipeline had no
+                # way to know that, so contacts.py matched the son's name
+                # to the father's published e-mail and the card offered
+                # one man's role beside another man's phone number.
+                # Family firms hand the company to a child of the same
+                # name often enough that this is not an edge case: SD-Kovo
+                # did it in the same week, Ing. Ivo Dubš (1945) out and
+                # Mgr. Ivo Dubš (1974) in on one day.
+                #
+                # Stored, never displayed. It is a date of birth: §7 keeps
+                # personal data to the contact block, and this is used
+                # only to decide whether two rows are one person.
+                "born": person.get("datumNarozeni"),
             }
             # Where the director lives, as the register states it.
             # NB: directors nest fyzickaOsoba directly under clenoveOrganu,
@@ -276,6 +292,11 @@ def parse_vr(data):
                 or legal.get("obchodniJmeno")
             )
             entry = {"name": name, "since": owner.get("datumZapisu")}
+            # Same reason as for directors above; a corporate owner has
+            # no birth date, so this stays None for them.
+            born = (osoba.get("fyzickaOsoba") or {}).get("datumNarozeni")
+            if born:
+                entry["born"] = born
             # Where a corporate owner is registered, straight from the
             # register: "kodStatu": "DE". Read off the field rather than
             # the legal-form suffix in the name, which cannot distinguish
@@ -339,15 +360,49 @@ def parse_rzp(data):
         for person in record.get("angazovaneOsoby", [])
     ]
 
-    # ARES never returns the establishments themselves, only counts in
-    # provozovnyStav (verified live on several ICOs). Counts are still
-    # a signal: "0 active of 2" means two sites were closed down.
+    # IT DOES RETURN THE ESTABLISHMENTS. This module said for a long time
+    # that ARES "never returns the establishments themselves, only counts
+    # in provozovnyStav", and the log carried the same claim - both from
+    # one observation on RTsoft's own ICO, which has no establishments at
+    # all. An empty list was read as a missing feature.
+    #
+    # They are here: zivnosti[].provozovny[], each with a full
+    # sidloProvozovny including kodAdresnihoMista, which is the same key
+    # coords.py turns into a coordinate pair. Verified live on 25591363
+    # (ATOMO PROJEKT), whose provozovnyStav says 13 total / 10 closed /
+    # 3 active - and exactly the 3 active ones come back. Closed sites
+    # are not returned at all, so nothing here has to filter by date.
+    #
+    # This matters well beyond a field on a card. ATOMO is registered at
+    # a Prague office address, 87 km from Plzeň, and every one of its
+    # three establishments is in Moravia, 230 km away. A radius applied
+    # to the registered seat admitted it; a radius applied to the places
+    # the company actually works does not. See filters/brief.py.
+    #
+    # Nested under zivnosti, so one establishment appears once per trade
+    # licence carried on at it - deduplicated on ICP, the establishment's
+    # own identifier.
     establishments = record.get("provozovnyStav", {})
+    sites = {}
+    for trade in record.get("zivnosti", []):
+        for site in trade.get("provozovny", []) or []:
+            seat = site.get("sidloProvozovny") or {}
+            sites.setdefault(site.get("icp"), {
+                "icp": site.get("icp"),
+                "name": site.get("nazev"),
+                "address": seat.get("textovaAdresa"),
+                "address_code": seat.get("kodAdresnihoMista"),
+                "municipality": seat.get("nazevObce"),
+                "district": seat.get("nazevOkresu"),
+                "region": seat.get("nazevKraje"),
+                "since": site.get("platnostOd"),
+            })
 
     return {
         "trades": trades,
         "responsible_representatives": representatives,
         "involved_persons": involved,
+        "establishments": list(sites.values()),
         "establishments_active": establishments.get("pocetAktivnich"),
         "establishments_total": establishments.get("pocetCelkem"),
     }
@@ -393,6 +448,15 @@ def get_company(ico, archive=None, run_id=None):
         company["coordinates"] = coords.get_coordinates(company["address_code"])
     else:
         company["coordinates"] = None
+
+    # The same lookup for every establishment. One extra RUIAN call per
+    # site, and the median company here has none or one - the three of
+    # ATOMO PROJEKT are already unusual. Worth it: this is the number the
+    # radius is applied to, so getting it from the register beats
+    # inferring the workplace from a postcode on a contact page.
+    for site in company.get("establishments") or []:
+        site["coordinates"] = (coords.get_coordinates(site["address_code"])
+                               if site.get("address_code") else None)
 
     return company
 

@@ -494,6 +494,41 @@ def stage_refresh(archive, run_id, days, icp=None):
             "newcomers_deferred": deferred, "registry_meta": meta}
 
 
+def workplaces_of(ico, archive=None, run_id=None):
+    """This company's establishments, with coordinates, or None if unknown.
+
+    Only the RZP endpoint, not get_company's four: the other three say
+    nothing about where the work happens, and this runs over the gated
+    few on every run. None means the register could not be reached and
+    the caller should keep whatever it already believed - an unreachable
+    ARES must never look like "this company has no shop floor", which is
+    the same rule the DNS resolver taught website.py.
+    """
+    from pipeline.sources import coords
+    from pipeline.sources.ares import BASE_URL, fetch, parse_rzp
+
+    try:
+        payload = fetch("ekonomicke-subjekty-rzp", ico)
+    except Exception as error:
+        print(f"    {ico}: establishments not read ({type(error).__name__})",
+              file=sys.stderr)
+        return None
+    if payload is None:
+        # A 404 is an answer: this company is not in the trade register,
+        # so it has no establishments to weigh against its seat.
+        return []
+
+    if archive is not None:
+        archive.store(ico, "ares", json.dumps(payload, ensure_ascii=False),
+                      url=f"{BASE_URL}/ekonomicke-subjekty-rzp/{ico}", run_id=run_id)
+
+    sites = parse_rzp(payload).get("establishments") or []
+    for site in sites:
+        site["coordinates"] = (coords.get_coordinates(site["address_code"])
+                               if site.get("address_code") else None)
+    return sites
+
+
 def stage_gate(window_days, icp, archive=None, run_id=None):
     """Three cuts, cheapest first: the brief, the negative filters, NOW.
 
@@ -510,6 +545,7 @@ def stage_gate(window_days, icp, archive=None, run_id=None):
     and cannot buy anything, and letting it through would spend a site
     crawl and an LLM pass to produce a card nobody can act on.
     """
+    from pipeline.filters import brief as brief_module
     from pipeline.filters.brief import describe
     from pipeline.scoring.select import eligible
     from pipeline.signals.now import (VACANCY_FRESH_DAYS, VACANCY_WINDOW, find,
@@ -560,6 +596,38 @@ def stage_gate(window_days, icp, archive=None, run_id=None):
     print(f"  {len(qualified)} of {funnel['pool']} companies have a dated event",
           file=sys.stderr)
 
+    # Where each gated company actually works, read from the register.
+    #
+    # Not to reject anybody: the radius admits on the nearest address a
+    # company keeps, and the seat already passed above. This is for the
+    # two things the seat alone gets wrong.
+    #
+    # It can bring a company CLOSER - SaM silnice a mosty is seated
+    # 134 km out and has an establishment at 116 - and re-admitting on
+    # the nearest point is why this runs before select rather than after.
+    #
+    # And it lets a card warn: ATOMO PROJEKT is seated at a Prague
+    # office 87 km away while all three of its establishments are in
+    # Moravia, the nearest 234 km. It stays in the week, because
+    # something of it really is inside the radius, but the card no
+    # longer implies a 90-minute drive to a shop floor that is four
+    # hours away. scoring/select.py::geography() prints the far one.
+    #
+    # Over 9843 candidates this would cost hours; over the handful with
+    # a dated reason it is seconds, which is the only reason it can be
+    # asked from the register at all rather than guessed from a website.
+    by_ico = {c["ico"]: c for c in pool}
+    sites_by_ico = {}
+    for ico in qualified:
+        sites = workplaces_of(ico, archive, run_id)
+        if sites is None:
+            continue
+        by_ico[ico]["establishments"] = sites
+        sites_by_ico[ico] = sites
+    print(f"  establishments read for {len(sites_by_ico)} companies, "
+          f"{sum(1 for s in sites_by_ico.values() if s)} have at least one",
+          file=sys.stderr)
+
     # Record what the gate found, for the companies it let through only.
     # Without this a run gates correctly and then renders a card with an
     # empty "why now": the events existed in memory and were never
@@ -580,7 +648,11 @@ def stage_gate(window_days, icp, archive=None, run_id=None):
               + (f", {orphaned} without a snapshot" if orphaned else ""),
               file=sys.stderr)
 
-    return qualified
+    # The sites travel with the gate result: select.py rebuilds its
+    # company dicts from the candidate file, which has no
+    # establishments in it, so handing them over is the only way the
+    # ranking measures the same distance the gate did.
+    return qualified, sites_by_ico
 
 
 def stage_enrich(archive, run_id, icos):
@@ -969,7 +1041,7 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
             archive, run_id, refresh_days or window_days, icp)
 
     print("\n[gate]", file=sys.stderr)
-    qualified = stage_gate(window_days, icp, archive, run_id)
+    qualified, sites_by_ico = stage_gate(window_days, icp, archive, run_id)
     report["stages"]["gate"] = len(qualified)
 
     if not qualified:
@@ -993,7 +1065,8 @@ def run(stages=STAGES, window_days=DEFAULT_WINDOW, top=DEFAULT_TOP,
     # actually be handed over. A company with no way to reach anybody is
     # not a dossier, so it stays in the ranking and out of the week.
     deliverable, ranked = select_run(window_days, top, archive=archive,
-                                     qualified=qualified, icp=icp)
+                                     qualified=qualified, icp=icp,
+                                     establishments=sites_by_ico)
     report["stages"]["select"] = {"qualified": len(ranked), "deliverable": len(deliverable)}
 
     print("\n[cards]", file=sys.stderr)

@@ -170,6 +170,19 @@ function view(row) {
 function distance(geo) {
   if (!isNumber(geo.distance_km)) return { value: null, empty: "poloha neurčena" };
   const value = `${Math.round(geo.distance_km)} km`;
+  // The radius admits a company on whichever of its addresses is
+  // nearest, so this figure can be the seat while the shop floor is
+  // hours away. Marked the same way "outside the radius" is - the
+  // number stays the answer, the tooltip says what it is a distance to.
+  if (isNumber(geo.far_site_km)) {
+    return {
+      value,
+      warn: true,
+      title: `Sídlo je ${Math.round(geo.distance_km)} km, ale provozovna`
+             + `${geo.far_site ? " " + geo.far_site : ""} je `
+             + `${Math.round(geo.far_site_km)} km od ${geo.from || "Plzně"}.`,
+    };
+  }
   if (geo.preferred !== false) return { value };
   // Marked rather than annotated: the figure is still the answer, and a
   // second word in a 90px column would push the row to two lines on every

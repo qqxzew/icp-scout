@@ -581,9 +581,27 @@ def geography(company, icp):
     """
     location = (icp or {}).get("location") or {}
     limit = location.get("km")
-    distance = distance_km(location.get("origin"), company.get("coordinates"))
+    # The same measurement filters/brief.py admitted the company on:
+    # distance to where it works, which is its registered establishments
+    # when it has any and its seat when it has none. Computing it a
+    # second way here is how a card came to promise 87 km to a company
+    # the radius should never have admitted at 234.
+    distance, where = brief_filter.nearest_workplace(location.get("origin"), company)
+    far, far_where = brief_filter.nearest_site(location.get("origin"), company)
+
+    # The radius admits on the nearest address (filters/brief.py explains
+    # why generously), so the card has to carry the other end of the
+    # range or it promises a short drive the company cannot honour.
+    # Reported only when that far site is meaningfully further AND
+    # outside the radius - a second plant 20 km past the first is not
+    # news, one 147 km past it is.
+    tell_far = (far is not None and distance is not None and limit
+                and far > limit and far - distance > 20)
     return {
         "distance_km": distance,
+        "measured_to": where,
+        "far_site_km": far if tell_far else None,
+        "far_site": far_where if tell_far else None,
         "from": location.get("from") or (location.get("origin") or {}).get("name"),
         "limit_km": limit,
         "preferred": None if (distance is None or not limit) else distance <= limit,
@@ -885,7 +903,7 @@ def ordering(row):
 
 
 def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=None,
-        icp=None):
+        icp=None, establishments=None):
     """Full weekly selection: FIT -> NOW gate -> PAIN rank.
 
     Returns the ranked list of NOW-qualified companies, longest first;
@@ -923,6 +941,15 @@ def run(window_days=DEFAULT_WINDOW, top=DEFAULT_TOP, archive=None, qualified=Non
               file=sys.stderr)
         qualified = now_qualified(pool, history, window_days)
     by_ico = {c["ico"]: c for c in companies}
+
+    # The establishments run.py read for the gated few. The candidate
+    # file predates them and is rebuilt only on a full ARES pass, so
+    # without this the distances here would be measured to the seat
+    # while the gate measured to the nearest workplace - the two stages
+    # disagreeing about geography is precisely the bug this fixes.
+    for ico, sites in (establishments or {}).items():
+        if ico in by_ico:
+            by_ico[ico]["establishments"] = sites
 
     # Loaded once for the whole ranking: reason_class() needs to know
     # whether a company's subsidy already has a procurement against it,

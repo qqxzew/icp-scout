@@ -169,16 +169,39 @@ def split_name(full_name):
 # ---------------------------------------------------------------------------
 
 
-def personal_address(address):
+def personal_address(address, domain=None):
     """Whether an address is addressed at a human rather than a desk.
 
     Section 7 asks for these to be marked: a person written to at their
     own address has to be able to say stop, and the salesperson has to
     know which addresses those are.
+
+    Two things beyond the vocabulary, both found on SaM silnice a mosty,
+    whose whole contact page was filed as personal addresses:
+
+    * an `e` glued to a desk word - efaktury@, epodatelna@. The stem
+      split does not separate it because there is no dot or dash, so
+      "efaktury" simply was not in the list.
+    * an address whose local part IS the company's domain -
+      sam-cl@sam-cl.cz. That is the company writing as itself, the most
+      generic address a company has, and it was being treated as a
+      person's because "sam" is not a desk word.
     """
     local = address.split("@")[0].lower()
     stem = re.split(r"[._-]", local)[0]
-    return local not in FUNCTIONAL and stem not in FUNCTIONAL
+
+    if domain:
+        # sam-cl@sam-cl.cz, atomo@atomo.cz: the company's own name used
+        # as a mailbox. Compared against the domain without its suffix,
+        # and with separators removed, so sam-cl@ matches samcl.cz too.
+        host = re.sub(r"[^a-z0-9]", "", domain.lower().split(".")[0])
+        if host and re.sub(r"[^a-z0-9]", "", local) == host:
+            return False
+
+    # A desk word with a single leading letter: efaktury, eshop, ...
+    trimmed = local[1:] if len(local) > 1 and local[0] in "e" else ""
+    return (local not in FUNCTIONAL and stem not in FUNCTIONAL
+            and trimmed not in FUNCTIONAL)
 
 
 def mail_domains(text, site_domain):
@@ -371,7 +394,7 @@ def find_people(text, directors, company_name, domain):
                 "name": name, "role_registered": person.get("role"),
                 "since": person.get("since"), "email": None, "phone": None,
                 "role_on_page": None, "quote": None,
-                "note": "surname is part of the company name - page mentions are not evidence",
+                "note": "příjmení je součástí názvu firmy – výskyty na stránce nic nedokládají",
             })
             continue
 
@@ -401,6 +424,41 @@ def find_people(text, directors, company_name, domain):
             1 for other in directors or []
             if split_name(other.get("name"))[1] == surname
         )
+
+        # Two people with the SAME FULL NAME are a harder case than two
+        # who merely share a surname, and the trick above cannot help:
+        # printing the given name does not say which Martin Kýzl this is.
+        # Dřevovýroba VLK has two, born 1969 and 2001 - father the owner,
+        # son the jednatel - each with his own address on the contact
+        # page (martin.kyzl@ and kyzl.martin@). The page identifies them
+        # by "ml." after the son's name, which is not something to build
+        # a matcher on.
+        #
+        # So nothing on the page is attributed to either of them. The
+        # register knows there are two; the page cannot say which is
+        # which; and the channel that used to be printed here was the
+        # father's e-mail beside the son's role.
+        #
+        # Decided on the birth date, because that is the only field that
+        # settles it: two rows with different dates are two people, two
+        # with the same date are one person re-registered (a re-entry,
+        # which signals/now.py already knows about) and stay matchable.
+        # Rows carrying no date at all - anything fetched before ares.py
+        # started storing it - keep the old behaviour rather than losing
+        # every contact in the base at once.
+        same_name = [other for other in directors or []
+                     if fold(other.get("name") or "") == fold(name or "")]
+        birth_dates = {other.get("born") for other in same_name}
+        true_namesakes = len(same_name) > 1 and len(birth_dates - {None}) > 1
+        if true_namesakes:
+            # Czech: this string is printed on the card, and the card is
+            # read by a Czech salesperson. Same rule as every other
+            # user-facing string in the pipeline.
+            entry["note"] = ("v rejstříku jsou dvě různé osoby tohoto jména – "
+                             "ze stránky nelze určit, která je která")
+            entry["namesake_conflict"] = True
+            found.append(entry)
+            continue
 
         best_score = -1
         for match in re.finditer(re.escape(surname), folded):
@@ -567,6 +625,45 @@ def find_page_people(text, domain, company_name, city, known):
     return people
 
 
+# Desks a sales call belongs at, and desks it does not. Only used to
+# order the generic addresses among themselves - nothing is discarded,
+# because a company whose only published address is the invoicing one is
+# still reachable there, and that is better than not being reachable.
+_SELLING_DESK = ("info", "obchod", "office", "kontakt", "contact", "firma",
+                 "sekretariat", "kancelar", "prodej", "sales", "poptavka",
+                 "objednavky", "export")
+_BACK_OFFICE = ("efaktury", "faktury", "fakturace", "ucetni", "uctarna",
+                "podatelna", "epodatelna", "gdpr", "kariera", "hr", "praca",
+                "prace", "job", "jobs", "webmaster", "admin", "no-reply",
+                "noreply", "newsletter", "spam", "reklamace", "helpdesk",
+                "support", "it")
+
+
+def _desk_rank(address, domain=None):
+    """Lower sorts first: the company's own line before its back office."""
+    local = address.split("@")[0].lower()
+    stem = re.split(r"[._-]", local)[0]
+    if domain:
+        host = re.sub(r"[^a-z0-9]", "", domain.lower().split(".")[0])
+        if host and re.sub(r"[^a-z0-9]", "", local) == host:
+            return 0
+    if local in _SELLING_DESK or stem in _SELLING_DESK:
+        return 1
+    if local in _BACK_OFFICE or stem in _BACK_OFFICE:
+        return 3
+    return 2
+
+
+def unique(values):
+    """Deduplicate, keeping the order the page prints them in."""
+    seen, out = set(), []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
 def company_channels(text, domain, company_name=None):
     """The generic channels, and every personal address on the page.
 
@@ -575,15 +672,31 @@ def company_channels(text, domain, company_name=None):
     from the register, and asks for them by name.
     """
     accepted = mail_domains(text, domain)
-    addresses = sorted({
+
+    # Order of appearance, not alphabetical. run.py takes the FIRST of
+    # these lists as the company's channel, so sorting was quietly
+    # choosing it - and choosing by spelling. SaM silnice a mosty prints
+    # its switchboard and sam-cl@sam-cl.cz at the top of the page and its
+    # accounts-payable line lower down; sorted() put efaktury@ and the
+    # Děčín branch number first, and that pair is what the card offered.
+    # A contact page leads with the way the company wants to be reached,
+    # so the page's own order is a better answer than the alphabet's.
+    addresses = unique(
         address.lower() for address in EMAIL.findall(text)
         if owns_domain(address.lower(), accepted)
         or company_freemail(address.lower(), company_name)
-    })
-    phones = sorted({p for p in (normalise_phone(x) for x in PHONE.findall(text)) if p})
+    )
+    phones = unique(p for p in (normalise_phone(x) for x in PHONE.findall(text)) if p)
 
-    generic = [a for a in addresses if not personal_address(a)]
-    personal = [a for a in addresses if personal_address(a)]
+    generic = [a for a in addresses if not personal_address(a, domain)]
+    personal = [a for a in addresses if personal_address(a, domain)]
+
+    # Page order decides between equals, but not between a switchboard
+    # and the accounts-payable inbox. A salesperson writing to
+    # efaktury@ has written to nobody; the same page's sam-cl@sam-cl.cz
+    # reaches the company. Stable, so addresses of equal rank keep the
+    # order the page gave them.
+    generic.sort(key=lambda a: _desk_rank(a, domain))
 
     return {"emails": generic, "personal_emails": personal, "phones": phones}
 

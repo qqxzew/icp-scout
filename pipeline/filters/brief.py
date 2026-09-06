@@ -115,13 +115,84 @@ def mismatch(company, icp):
     # than one at 149, and cutting between them would be false
     # precision, not strictness.
     if location.get("km"):
-        distance = distance_km(location.get("origin"), company.get("coordinates"))
+        distance, _ = nearest_workplace(location.get("origin"), company)
         if distance is None:
             return "location_unknown"
         if distance > location["km"] + RADIUS_TOLERANCE_KM:
             return "outside_radius"
 
     return None
+
+
+def workplaces(company):
+    """Every address this company can be visited at: its seat and its sites.
+
+    Both, never one instead of the other. A registered seat is a postal
+    address and an establishment is, by the trade licence act, an
+    address where the business is carried on - but which of them holds
+    the shop floor is not something the register says, and guessing
+    wrong is expensive in both directions:
+
+    * measuring only the seat put ATOMO PROJEKT in a week's five at
+      87 km to a Prague office while all three of its establishments
+      are in Moravia, 234 km and further.
+    * measuring only the establishments would drop every company whose
+      shop floor is at its seat and whose one registered provozovna is
+      a distant warehouse or a sales office. That is a large and
+      invisible cut through the funnel, and the funnel is the thing
+      this project has least of.
+
+    So the rule is the generous one: if ANY address the company keeps
+    is inside the radius, the company is reachable and stays. The
+    distance shown is to the nearest of them, and scoring/select.py
+    prints where that nearest point is whenever it is not the seat - so
+    a card that says 87 km also says the plant is 234 away, and the
+    salesperson decides whether that is a drive worth making. Deciding
+    it for them is what "preferovaně" in the ICP forbids.
+    """
+    places = []
+    if company.get("coordinates"):
+        places.append((company["coordinates"], company.get("municipality") or "sídlo", True))
+    for site in company.get("establishments") or []:
+        if site.get("coordinates"):
+            places.append((site["coordinates"],
+                           site.get("municipality") or site.get("address"), False))
+    return places
+
+
+def nearest_workplace(origin, company):
+    """(km to the closest address this company keeps, its name), or (None, None)."""
+    best = (None, None)
+    for coordinates, label, _ in workplaces(company):
+        distance = distance_km(origin, coordinates)
+        if distance is None:
+            continue
+        if best[0] is None or distance < best[0]:
+            best = (distance, label)
+    return best
+
+
+def nearest_site(origin, company):
+    """(km, name) of the closest establishment, ignoring the seat.
+
+    Admits and rejects nothing - it exists so a card can say how far the
+    nearest actual workplace is when the seat is nearer than any of them.
+    The NEAREST rather than the farthest on purpose: the question a
+    salesperson is about to answer is "how far do I drive to see the
+    shop floor", and the answer is the closest one, not the worst one.
+    ATOMO PROJEKT has sites at 234, 266 and 336 km - the number that
+    belongs on the card is 234.
+    """
+    best = (None, None)
+    for coordinates, label, is_seat in workplaces(company):
+        if is_seat:
+            continue
+        distance = distance_km(origin, coordinates)
+        if distance is None:
+            continue
+        if best[0] is None or distance < best[0]:
+            best = (distance, label)
+    return best
 
 
 def apply(companies, icp):
