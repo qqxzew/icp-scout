@@ -3,84 +3,113 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>icp-scout</title>
+<title>icp-scout — pět firem na týden</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=2">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="week.css?v=6">
 </head>
 <body>
 
-<!-- Fixed to the corner rather than placed in the flow: it belongs to the
-     session, not to either of the two things on the page, and putting it
-     next to one of them would read as that one's caption. -->
-<div class="since" id="since" hidden>
-  <span class="since-label">Poslední běh</span>
-  <span class="since-value" id="since-value">—</span>
-</div>
+<!-- The same two icons the dossier draws, with the same paths: a link to
+     a source and a channel hanging off the line above it. Ids are
+     prefixed because `id="wk-deck"` once collided with the deck
+     container's own id and getElementById returned the symbol. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="wk-i-arrow" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></symbol>
+  <symbol id="wk-i-external" viewBox="0 0 16 16"><path d="M6.5 4.5H11.5V9.5M11.5 4.5L5 11"/></symbol>
+  <symbol id="wk-i-sub" viewBox="0 0 12 12"><path d="M3 1V6.5C3 7.6 3.9 8 4.8 8H8M8 8L6.2 6.2M8 8L6.2 9.8"/></symbol>
+</svg>
 
-<main class="stage">
+<!-- Fixed, small, out of the reading path: the week is the destination,
+     and going back to the brief is the rare second errand, not the first
+     thing to offer somebody who just arrived here from a finished run. -->
+<a class="wk-home" href="/" aria-label="Zpět na zadání">
+  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
+  <span>Zadání</span>
+</a>
 
-  <div class="shell">
+<main class="wk-stage">
+<div class="wk" data-view="deck">
 
-    <section class="panel" id="panel" aria-hidden="true">
-      <header class="panel-head">
-        <button class="back" id="back" type="button" aria-label="Zpět" hidden>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
-        </button>
-        <span class="panel-title" id="panel-title">Filtry</span>
-        <span class="panel-count" id="panel-count"></span>
-      </header>
+  <header class="wk-head">
+    <div>
+      <h1 class="wk-head__title">Pět firem na tento týden</h1>
+      <p class="wk-sub" id="wk-sub">Načítání…</p>
+    </div>
 
-      <div class="panel-body" id="panel-body"></div>
+    <div class="segmented wk-switch" role="group" aria-label="Zobrazení">
+      <button class="seg-item" type="button" data-set-view="deck" aria-pressed="true">Karty</button>
+      <button class="seg-item" type="button" data-set-view="grid" aria-pressed="false">Přehled</button>
+    </div>
+  </header>
 
-      <footer class="panel-foot" id="panel-foot">
-        <button class="cancel" id="cancel" type="button">Zrušit</button>
-        <span class="discard" id="discard"></span>
-        <button class="save" id="save" type="button">Uložit</button>
-      </footer>
-    </section>
-
-    <!-- Two separate controls, deliberately not one bar. Editing the brief
-         and spending a run on it are different decisions: the first is
-         reversible and happens often, the second takes minutes and writes
-         the week. Sharing a container implied one was the other's submit
-         button, which it never was. -->
-    <button class="tile tile--filters" id="gear" type="button" aria-expanded="false">
-      <span class="tile-icon">
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M3 6.5h5M12 6.5h5M3 13.5h9M16 13.5h1"/>
-          <circle cx="10" cy="6.5" r="1.9"/>
-          <circle cx="14" cy="13.5" r="1.9"/>
-        </svg>
-      </span>
-      <span class="tile-text">
-        <span class="tile-title">Filtry</span>
-        <span class="tile-sub" id="summary">Načítám zadání…</span>
-      </span>
-      <span class="tile-open">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
-      </span>
+  <!-- The deck is the scroll container in "karty" and a plain grid in
+       "přehled". Same nodes in both: switching a view must never rebuild
+       cards, or the card the salesperson was reading loses focus and the
+       list jumps back to the start. -->
+  <div class="wk-deck-wrap">
+    <button class="wk-nav wk-nav--prev" type="button" data-scroll="-1" aria-label="Předchozí firma">
+      <svg aria-hidden="true"><use href="#wk-i-arrow"/></svg>
     </button>
 
-    <button class="tile tile--run" id="run" type="button">
-      <span class="tile-icon">
-        <svg class="run-glyph" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4.5l8 5.5-8 5.5V4.5z"/></svg>
-        <span class="run-spinner" aria-hidden="true"></span>
-      </span>
-      <span class="tile-text">
-        <span class="tile-title" id="run-title">Spustit běh</span>
-        <span class="tile-sub" id="run-sub">Najde firmy s důvodem volat tento týden</span>
-      </span>
-      <span class="tile-open">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
-      </span>
-    </button>
+    <div class="wk-deck" id="wk-deck" tabindex="-1"
+         role="group" aria-roledescription="karusel" aria-label="Firmy tohoto týdne"></div>
 
+    <button class="wk-nav wk-nav--next" type="button" data-scroll="1" aria-label="Další firma">
+      <svg aria-hidden="true"><use href="#wk-i-arrow"/></svg>
+    </button>
   </div>
 
+  <footer class="wk-foot">
+    <div class="wk-dots" id="wk-dots" role="tablist" aria-label="Přejít na firmu"></div>
+    <span class="wk-counter" id="wk-counter" aria-hidden="true"></span>
+    <span class="wk-sr" id="wk-live" aria-live="polite"></span>
+    <span class="wk-legend">FIT → třída důvodu → korroborace → radius → čerstvost</span>
+  </footer>
+
+</div>
 </main>
 
-<script src="app.js?v=2"></script>
+<!-- One card, once. Cloning a template beats building a dozen elements
+     per company in JS: the browser parses this markup a single time, and
+     the structure stays readable as markup instead of as constructor
+     calls. -->
+<template id="wk-card-tpl">
+  <article class="wk-card" tabindex="-1">
+    <span class="wk-rank" data-f="rank" aria-hidden="true"></span>
+    <span class="wk-sr" data-f="sr-rank"></span>
+
+    <div class="wk-main">
+      <h2 class="wk-name" data-f="name"></h2>
+      <p class="wk-ico" data-f="ico"></p>
+
+      <section class="wk-block">
+        <h3>Proč teď</h3>
+        <p class="wk-reason">
+          <span class="wk-class" data-f="class"></span><span data-f="label"></span><span class="wk-age" data-f="age"></span>
+        </p>
+        <p class="wk-why"><span data-f="why"></span><span data-f="why-source"></span></p>
+        <q data-f="quote"></q>
+      </section>
+
+      <dl class="wk-facts" data-f="facts"></dl>
+      <ul class="wk-chips" data-f="chips"></ul>
+
+      <section class="wk-block wk-block--contact">
+        <h3 data-f="contact-title">Kontakt</h3>
+        <div data-f="contact"></div>
+      </section>
+
+      <p class="wk-foot-line">
+        <span class="wk-evidence" data-f="evidence"></span>
+        <a class="wk-open" data-f="open">Otevřít podklad</a>
+      </p>
+    </div>
+  </article>
+</template>
+
+<script src="week.js?v=7"></script>
 </body>
 </html>

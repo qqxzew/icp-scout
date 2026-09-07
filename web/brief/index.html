@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>icp-scout</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+
+<!-- Fixed to the corner rather than placed in the flow: it belongs to the
+     session, not to either of the two things on the page, and putting it
+     next to one of them would read as that one's caption. -->
+<div class="since" id="since" hidden>
+  <span class="since-label">Poslední běh</span>
+  <span class="since-value" id="since-value">—</span>
+</div>
+
+<main class="stage">
+
+  <div class="shell">
+
+    <section class="panel" id="panel" aria-hidden="true">
+      <header class="panel-head">
+        <button class="back" id="back" type="button" aria-label="Zpět" hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
+        </button>
+        <span class="panel-title" id="panel-title">Filtry</span>
+        <span class="panel-count" id="panel-count"></span>
+      </header>
+
+      <div class="panel-body" id="panel-body"></div>
+
+      <footer class="panel-foot" id="panel-foot">
+        <button class="cancel" id="cancel" type="button">Zrušit</button>
+        <span class="discard" id="discard"></span>
+        <button class="save" id="save" type="button">Uložit</button>
+      </footer>
+    </section>
+
+    <!-- Two separate controls, deliberately not one bar. Editing the brief
+         and spending a run on it are different decisions: the first is
+         reversible and happens often, the second takes minutes and writes
+         the week. Sharing a container implied one was the other's submit
+         button, which it never was. -->
+    <button class="tile tile--filters" id="gear" type="button" aria-expanded="false">
+      <span class="tile-icon">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M3 6.5h5M12 6.5h5M3 13.5h9M16 13.5h1"/>
+          <circle cx="10" cy="6.5" r="1.9"/>
+          <circle cx="14" cy="13.5" r="1.9"/>
+        </svg>
+      </span>
+      <span class="tile-text">
+        <span class="tile-title">Filtry</span>
+        <span class="tile-sub" id="summary">Načítám zadání…</span>
+      </span>
+      <span class="tile-open">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </span>
+    </button>
+
+    <button class="tile tile--run" id="run" type="button">
+      <span class="tile-icon">
+        <svg class="run-glyph" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4.5l8 5.5-8 5.5V4.5z"/></svg>
+        <span class="run-spinner" aria-hidden="true"></span>
+      </span>
+      <span class="tile-text">
+        <span class="tile-title" id="run-title">Spustit běh</span>
+        <span class="tile-sub" id="run-sub">Najde firmy s důvodem volat tento týden</span>
+      </span>
+      <span class="tile-open">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </span>
+    </button>
+
+  </div>
+
+</main>
+
+<script src="app.js?v=2"></script>
+</body>
+</html>

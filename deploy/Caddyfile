@@ -1,0 +1,49 @@
+# TLS terminates at Cloudflare's edge (Cloudflare Tunnel), not here -
+# cloudflared connects to this Caddy over plain HTTP inside the docker
+# network. No domain name appears in this file on purpose: ":80" is not a
+# named site address, so Caddy never tries to provision a certificate for
+# anything, and the domain can be changed in the Cloudflare dashboard
+# without touching the server.
+
+:80 {
+	# The interface ships a 105 MB companies.db and several JSON codebooks
+	# to the browser. Compression is the difference between a demo that
+	# opens and one that spins.
+	encode zstd gzip
+
+	reverse_proxy app:8000 {
+		# Cloudflare's edge always sets Cf-Connecting-Ip to the real
+		# visitor IP and overwrites any client-supplied value, so it
+		# cannot be spoofed. Replacing (not appending to)
+		# X-Forwarded-For with it means the app sees exactly one
+		# trustworthy entry instead of trusting cloudflared's own
+		# container IP as "the client".
+		header_up X-Forwarded-For {header.Cf-Connecting-Ip}
+		header_up X-Forwarded-Proto https
+
+		# A weekly run started from the button takes hours, and
+		# POST /api/run returns immediately - but GET /api/run/log is
+		# read while the run is still going, and the card endpoint
+		# reaches out to justice.cz. The default 0 (no timeout) on
+		# reads would hang a browser tab forever on a stuck upstream;
+		# five minutes is longer than any single response here.
+		transport http {
+			read_timeout 300s
+		}
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}

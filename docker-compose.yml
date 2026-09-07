@@ -1,0 +1,97 @@
+# Production stack for the icp-scout prototype.
+#
+#   Cloudflare edge (TLS) ──▶ cloudflared ──▶ Caddy :80 ──▶ app:8000
+#
+# The server has no public IPv4 of its own, so a Cloudflare Tunnel carries
+# traffic in: cloudflared makes an outbound connection to Cloudflare, and
+# nothing here needs to publish 80/443 or hold a certificate. TLS
+# terminates at Cloudflare's edge.
+#
+# This is a second, independent stack on a machine that already runs one.
+# It has its own tunnel, its own network and publishes no host port, so
+# the two share nothing but the docker daemon: rebuilding or restarting
+# this one cannot take the other site down, and there is no port to
+# collide over.
+#
+#   docker compose up -d --build
+#
+# The domain is not named anywhere in this repository. It is a public
+# hostname on the tunnel, set in the Cloudflare Zero Trust dashboard and
+# pointed at http://caddy:80 - which means changing it, or adding a
+# second one, is a dashboard edit and not a deployment.
+
+name: icp-scout
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN from the Zero Trust dashboard}
+    depends_on:
+      - caddy
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    networks:
+      - internal
+
+  app:
+    build: .
+    image: icp-scout:latest
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      # The only key the prototype needs. The pipeline's own ceiling on
+      # what a run may spend, so a loop in a prompt cannot quietly bill a
+      # night's work.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      ICP_LLM_BUDGET_USD: ${ICP_LLM_BUDGET_USD:-}
+    volumes:
+      # The register data is not in the image and not in git - it is
+      # regenerated from public sources and weighs about a gigabyte. See
+      # the header of the Dockerfile.
+      - ./data:/app/data
+      # Mounted whole, not as a single file, and this is not cosmetic:
+      # POST /api/icp writes web/icp.json by creating a temporary file and
+      # renaming it over the old one. A single-file bind mount pins an
+      # inode, so the rename would land beside the mount and the
+      # container would go on reading the file it started with. Mounting
+      # the directory also means the saved ICP survives a rebuild, which
+      # is the whole point - it is the salesperson's input, not a build
+      # artifact.
+      - ./web:/app/web
+    # The machine has 2 GB and no swap, and it already runs another site.
+    # Without a limit, a weekly run that grows past what is free gets the
+    # kernel's OOM killer involved, and the kernel picks its victim by
+    # its own arithmetic - which can be the neighbouring database. With
+    # one, an over-eating run kills only this container and `restart`
+    # brings the interface straight back. Raise it if a run dies at the
+    # same stage twice; that is the symptom.
+    mem_limit: 1200m
+    healthcheck:
+      # No curl in python:slim, and adding it to the image for one line
+      # is a worse trade than using the interpreter that is already there.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/run', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
