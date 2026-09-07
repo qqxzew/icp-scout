@@ -1,0 +1,249 @@
+/* What was already handed over, in the language the rest of the site
+ * already speaks.
+ *
+ * Nothing here invents a palette, a typeface or a shape: the surface,
+ * the hairline, the amber accent and the easing are style.css's
+ * variables, the section heading is the week's .wk-block h3 register,
+ * the marks are its .wk-chip, and the entrance is style.css's own
+ * @keyframes result-in - reused, not re-declared. What this file adds is
+ * the one shape the site had no rule for: a dated list of runs rather
+ * than a deck of cards.
+ */
+
+.hs-stage {
+  min-height: 100%;
+  padding: 48px 24px;
+}
+
+/* home ------------------------------------------------------------------ */
+
+/* The week's back link, unchanged - it is the same errand from the same
+   kind of page, and a second spelling of it would be a second thing to
+   keep in step. */
+.hs-home {
+  position: fixed;
+  top: 20px;
+  left: 22px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-decoration: none;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+
+.hs-home svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hs-home:hover { color: var(--ink); border-color: #2e2e2e; }
+.hs-home:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 2px; }
+
+@media (max-width: 900px) {
+  .hs-home { position: static; margin: 0 0 16px 4px; }
+}
+
+.hs {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* head ------------------------------------------------------------------ */
+
+.hs-head { margin: 0 4px 20px; }
+
+/* .results-head's register: the page is titled the way the panel is
+   titled, not with a display line of its own. */
+.hs-head__title {
+  color: var(--ink-dim);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hs-sub {
+  max-width: 64ch;
+  margin-top: 8px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+}
+
+.hs-sub b { color: var(--ink-dim); font-weight: 500; }
+
+/* run -------------------------------------------------------------------- */
+
+.hs-run + .hs-run { margin-top: 26px; }
+
+.hs-run {
+  animation: result-in 220ms var(--ease) both;
+}
+
+.hs-run:nth-child(2) { animation-delay: 40ms; }
+.hs-run:nth-child(3) { animation-delay: 80ms; }
+.hs-run:nth-child(n+4) { animation-delay: 120ms; }
+
+/* The date leads and the run number follows it. The salesperson is
+   looking for a week, not for a primary key - but the key has to be here,
+   because it is what the archive, the log and the results file all call
+   this batch. */
+.hs-run-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0 4px 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.hs-run-date {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.hs-run-age { color: var(--warn); font-size: 11px; }
+
+.hs-run-meta {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* rows ------------------------------------------------------------------- */
+
+.hs-rows { list-style: none; }
+
+.hs-row {
+  padding: 9px 4px 9px 12px;
+  border-radius: 10px;
+  transition: background 160ms var(--ease);
+}
+
+.hs-row:hover { background: var(--surface); }
+
+/* The whole line opens the dossier, not a small link at its end: every
+   row on this page has exactly one destination, and a 12px target inside
+   a 40px row is a miss waiting to happen. */
+.hs-link {
+  display: flex;
+  align-items: baseline;
+  gap: 4px 12px;
+  flex-wrap: wrap;
+  color: inherit;
+  text-decoration: none;
+}
+
+.hs-link:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 3px; }
+
+.hs-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Absence is a value, and it keeps its own colour rather than passing
+   for a name: this row was really handed over, the register simply no
+   longer answers for the IČO. */
+.hs-name[data-empty] {
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.hs-where { color: var(--ink-faint); font-size: 11px; }
+
+.hs-ico {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hs-go {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+}
+
+.hs-row:hover .hs-go,
+.hs-link:focus-visible .hs-go { opacity: 1; }
+
+/* marks ------------------------------------------------------------------ */
+
+/* The week's .wk-chip, unchanged. */
+.hs-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+  list-style: none;
+}
+
+.hs-marks:empty { display: none; }
+
+.hs-mark {
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink-faint);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hs-mark--warn { color: var(--warn); }
+
+/* states ----------------------------------------------------------------- */
+
+/* .results-status: a line of text where the rows would be, not a shape
+   pretending to be one. */
+.hs-state {
+  padding: 40px 24px;
+  color: var(--ink-dim);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.hs-state b { display: block; margin-bottom: 6px; color: var(--ink); font-weight: 500; }
+.hs-state--error { color: var(--warn); }
+
+/* responsive ------------------------------------------------------------- */
+
+@media (max-width: 560px) {
+  .hs-stage { padding: 32px 16px; }
+  /* The IČO stops being pushed to the right edge: on one wrapped line
+     under the name, margin-left:auto would strand it alone on a third. */
+  .hs-ico { margin-left: 0; }
+  .hs-run-meta { margin-left: 0; flex-basis: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hs-run { animation: none; }
+  .hs-go { transition: none; }
+}

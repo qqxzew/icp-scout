@@ -366,6 +366,77 @@ def get_card(ico: str):
 	return card_for_web(card)
 
 
+@app.get("/api/history")
+def get_history():
+	"""Everything ever handed to the salesperson, newest run first.
+
+	Requirement 8 of the brief asks to see what is in what state
+	"including what was already handed over in past weeks". The rows have
+	been written since mark_delivered() started filling the table; until
+	now nothing read them back, so the answer existed only in the database.
+
+	Grouped by run rather than returned flat. A run is the unit the
+	prototype actually works in - five companies chosen together against
+	one brief - and a flat list of dates makes "which week was this" a
+	thing to reconstruct by eye. Grouping is not deduplication: a company
+	handed over in three runs appears in all three, because that is three
+	separate weeks in which somebody was told to call it, and collapsing
+	them would erase the one fact this page exists to show.
+
+	A delivered IČO that is no longer in the candidate list gets no name.
+	The register changes and the brief changes, so a company can drop out
+	of the pool after it went out - that is a state, not an error, and the
+	honest answer is the IČO with the name reported as missing rather than
+	a dropped row (which would deny it was ever delivered) or a name
+	fetched from somewhere it was not measured.
+	"""
+	companies, _websites, _contacts = CACHES.current()
+
+	# How many runs each company went out in, counted before grouping so a
+	# row can say "handed over three times" without the page having to
+	# scan the other groups to find out.
+	deliveries = ARCHIVE.delivered()
+	times = {}
+	for row in deliveries:
+		ico = str(row["ico"]).zfill(8)
+		times[ico] = times.get(ico, 0) + 1
+
+	# dict, not a list with a lookup: rows come back ordered by
+	# delivered_at DESC, which is the order the runs should keep, and
+	# Python dicts preserve insertion order.
+	runs = {}
+	for row in deliveries:
+		# zfill on read as well as on write: mark_delivered() pads, but a
+		# row written by anything else would sit under an unpadded key and
+		# silently miss its name - the same trap discards() records.
+		ico = str(row["ico"]).zfill(8)
+		company = companies.get(ico)
+		group = runs.setdefault(row["run_id"], {
+			"run_id": row["run_id"],
+			"started_at": row["started_at"],
+			"note": row["note"],
+			"companies": [],
+		})
+		group["companies"].append({
+			"ico": ico,
+			# None, never a placeholder string: the interface has to be
+			# able to tell "no name found" from a company literally
+			# called that, and only one of the two is a fact.
+			"name": company["name"] if company else None,
+			"city": company.get("city") if company else None,
+			"region": company.get("region") if company else None,
+			"in_candidates": company is not None,
+			"delivered_at": row["delivered_at"],
+			"times_delivered": times[ico],
+		})
+
+	return {
+		"runs": list(runs.values()),
+		"deliveries": len(deliveries),
+		"companies": len(times),
+	}
+
+
 # Mounted last, and only after every /api route above: a mount on "/"
 # matches everything, and routes are tried in the order they were added.
 #

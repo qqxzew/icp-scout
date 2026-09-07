@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>icp-scout — historie předaných firem</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="history.css">
+</head>
+<body>
+
+<!-- The dossier's own icons, same paths: an arrow back and the external
+     link mark on a row that opens a podklad. Ids are prefixed for the
+     same reason the week's are - a bare id="arrow" collides across
+     symbol sheets and getElementById returns whichever came first. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="hs-i-back" viewBox="0 0 16 16"><path d="M10 3L5 8l5 5"/></symbol>
+  <symbol id="hs-i-arrow" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></symbol>
+</svg>
+
+<!-- "/" is the week, not the brief: the two screens swapped places when
+     the selection became the landing page. -->
+<a class="hs-home" href="/" aria-label="Zpět na týden">
+  <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#hs-i-back"/></svg>
+  <span>Týden</span>
+</a>
+
+<main class="hs-stage">
+<div class="hs">
+
+  <header class="hs-head">
+    <h1 class="hs-head__title">Co už bylo předáno</h1>
+    <p class="hs-sub" id="hs-sub">Načítání…</p>
+  </header>
+
+  <div class="hs-list" id="hs-list"></div>
+
+</div>
+</main>
+
+<!-- One run, once, and one row once: the same reason the week clones a
+     template - the markup is parsed a single time and stays readable as
+     markup rather than as a stack of createElement calls. -->
+<template id="hs-run-tpl">
+  <section class="hs-run">
+    <header class="hs-run-head">
+      <h2 class="hs-run-date" data-f="date"></h2>
+      <span class="hs-run-age" data-f="age"></span>
+      <span class="hs-run-meta" data-f="meta"></span>
+    </header>
+    <ol class="hs-rows" data-f="rows"></ol>
+  </section>
+</template>
+
+<template id="hs-row-tpl">
+  <li class="hs-row">
+    <a class="hs-link" data-f="open">
+      <span class="hs-name" data-f="name"></span>
+      <span class="hs-where" data-f="where"></span>
+      <span class="hs-ico" data-f="ico"></span>
+      <svg class="hs-go" aria-hidden="true"><use href="#hs-i-arrow"/></svg>
+    </a>
+    <ul class="hs-marks" data-f="marks"></ul>
+  </li>
+</template>
+
+<script src="history.js"></script>
+</body>
+</html>
