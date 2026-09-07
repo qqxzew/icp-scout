@@ -42,6 +42,12 @@ URL = "https://opendata.csu.gov.cz/soubory/od/od_org03/res_data.csv"
 # and the size drifts.
 MIN_BYTES = 400_000_000
 
+# The official CZ-NACE 2025 classification, from the same publisher.
+# ~300 KB; the floor rejects an error page, nothing more.
+NACE_URL = "https://vdb.czso.cz/opendata/ciselniky/polozky?kod=CZ_NACE_RES2025"
+NACE_PATH = Path("data/raw/nace_codebook.csv")
+NACE_MIN_BYTES = 100_000
+
 # CSU 579 codes covering the ICP size range. The profile writes it as
 # "(20) 50-200": unbracketed is the target band, the bracket is the
 # lower boundary it still accepts. So all four are candidates, and 240
@@ -171,6 +177,54 @@ def download(path=DEFAULT_PATH, url=URL, force=False):
 
     partial.replace(path)
     print(f"res_bulk: saved {path} ({written / 1e6:.0f} MB)", file=sys.stderr)
+    return path
+
+
+def download_nace(path=NACE_PATH, url=NACE_URL, force=False):
+    """Fetch the official CZ-NACE 2025 classification. Returns the path.
+
+    It lives here rather than in codebooks.py because that module states
+    it makes no HTTP calls, and next to the RES download because both are
+    the same publisher's open data - the ICP screens are built from the
+    two together.
+
+    Why it is fetched at all instead of being committed: it was the one
+    thing a clean install could not build. build_ui_data.py raises
+    FileNotFoundError on it, so a machine that ran --bootstrap from
+    nothing still had no interface, and card.py degrades quietly - a
+    missing codebook turns every industry into its bare five-digit code
+    on the salesperson's card, which is not an error anywhere and is
+    wrong everywhere. Found on the first clean rebuild, 07.09.2026.
+
+    Small enough to fetch whole; the floor below is only there to reject
+    an error page served with status 200.
+    """
+    path = Path(path)
+    if path.exists() and path.stat().st_size >= NACE_MIN_BYTES and not force:
+        print(f"res_bulk: {path} already present, skipping", file=sys.stderr)
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"res_bulk: downloading {url}", file=sys.stderr)
+
+    request = urllib.request.Request(url, headers={"User-Agent": "icp-scout/0.1"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        body = response.read()
+
+    # The header is the cheapest proof this is the classification and not
+    # a portal error page: CHODNOTA holds the code, TEXT its name, and
+    # nothing else the pipeline reads has those two columns.
+    head = body[:400].decode("utf-8-sig", "replace")
+    if len(body) < NACE_MIN_BYTES or "CHODNOTA" not in head or "TEXT" not in head:
+        raise RuntimeError(
+            f"res_bulk: {url} did not return the CZ-NACE codebook "
+            f"({len(body)} bytes, first line {head.splitlines()[:1]})"
+        )
+
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.write_bytes(body)
+    partial.replace(path)
+    print(f"res_bulk: saved {path} ({len(body) / 1e3:.0f} KB)", file=sys.stderr)
     return path
 
 
@@ -310,11 +364,17 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, help="stop after N matches")
     parser.add_argument("--download", action="store_true",
                         help="fetch res_data.csv (~517 MB) and exit")
+    parser.add_argument("--download-nace", action="store_true",
+                        help="fetch the CZ-NACE 2025 codebook (~300 KB) and exit")
     parser.add_argument("--force", action="store_true", help="re-download even if present")
     args = parser.parse_args()
 
     if args.download:
         download(args.file, force=args.force)
+        raise SystemExit
+
+    if args.download_nace:
+        download_nace(force=args.force)
         raise SystemExit
 
     criteria = {

@@ -48,6 +48,7 @@ Run:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -64,6 +65,11 @@ CONTACTS = Path("data/raw/contacts.jsonl")
 MPSV_VACANCIES = Path("data/raw/mpsv_vacancies.jsonl")
 MPSV_HISTORY = Path("data/raw/mpsv_history.jsonl")
 SUBSIDIES = Path("data/raw/dotace_eu.jsonl")
+TENDERS = Path("data/raw/nen.jsonl")
+NACE_CODEBOOK = Path("data/raw/nace_codebook.csv")
+# What build_ui_data.py writes last, and therefore what says the whole of
+# data/ui is there: companies.db plus nace/sizes/regions/obce.json.
+UI_DB = Path("data/ui/companies.db")
 ENV_FILE = Path(".env")
 # What the run leaves behind for web/week/ to read, and what api/main.py
 # serves at /api/results. Written by the run itself rather than exported
@@ -121,13 +127,37 @@ class Need:
         return self.path.exists() and self.size_mb >= max(self.min_mb, 1e-6)
 
 
+class KeyNeed(Need):
+    """The API key, which is not always a file.
+
+    Run from a checkout, the key lives in .env. Run from the container,
+    it arrives as an environment variable and .env is deliberately absent
+    - the image excludes it, because a credential baked into a layer is a
+    credential that leaks with the image. Checking only for the file
+    reported the key as MISSING on a machine that had it, which is a
+    prerequisite check lying about the one thing it exists to confirm.
+    """
+
+    @property
+    def present(self):
+        return bool(os.environ.get("OPENAI_API_KEY")) or super().present
+
+
 def requirements():
     """Everything a run touches, in the order one thing needs another."""
     return [
-        Need(ENV_FILE, "OpenAI API key", ("agents",),
-             hint="create .env with OPENAI_API_KEY=sk-... (see .env.example)"),
+        KeyNeed(ENV_FILE, "OpenAI API key", ("agents",),
+                hint="set OPENAI_API_KEY in the environment, or create .env "
+                     "with OPENAI_API_KEY=sk-... (see .env.example)"),
         Need(RES_BULK, "RES bulk export, 517 MB", ("bootstrap",), min_mb=400, minutes=10,
              build=[sys.executable, "-m", "pipeline.sources.res_bulk", "--download"]),
+        # Not a run input - card.py turns a NACE code into its name with
+        # it, and build_ui_data.py raises FileNotFoundError without it.
+        # Listed because the first clean rebuild proved the list was
+        # wrong: --bootstrap finished, reported success, and left a
+        # machine whose interface could not be built at all.
+        Need(NACE_CODEBOOK, "CZ-NACE 2025 classification", ("bootstrap", "cards"), minutes=1,
+             build=[sys.executable, "-m", "pipeline.sources.res_bulk", "--download-nace"]),
         # Everything below is derived, and each is derived from the one
         # above it - which is why the list is ordered rather than a dict.
         Need(CANDIDATES, "ICP candidates enriched through ARES", ("refresh", "gate", "select"),
@@ -145,6 +175,21 @@ def requirements():
         Need(CONTACTS, "contacts matched to register names", ("cards", "select"),
              build=[sys.executable, "-m", "pipeline.sources.contacts", "--all", "--archive"],
              minutes=15),
+        # The tenders. load_tenders() returns {} when the file is absent,
+        # which is the worst possible failure for a prerequisite list: a
+        # clean install ran, reported success, and simply never produced
+        # a class C reason - "open procurement" was unreachable and
+        # nothing said so. Silence is why it is listed.
+        Need(TENDERS, "tenders published on NEN", ("select", "cards"),
+             build=[sys.executable, "-m", "pipeline.sources.nen", "--all", "--archive"],
+             minutes=30),
+        # The interface's own data, and the last thing built: the screens
+        # read companies.db and three codebooks out of data/ui, and none
+        # of it is written by a run. companies.db is the sentinel because
+        # build_ui_data.py writes it last - if it is there, the rest is.
+        Need(UI_DB, "interface data: companies.db and the codebooks", ("bootstrap",),
+             build=[sys.executable, "-m", "pipeline.build_ui_data"],
+             minutes=15, min_mb=50),
     ]
 
 
