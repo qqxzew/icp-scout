@@ -12,7 +12,7 @@
 #
 # Host and user are secrets, not literals. Not because they are sensitive
 # - the box is reachable by name - but because this repository is meant
-# to be split into a public copy (see CLAUDE.md), and the deployment
+# to be split into a public copy, and the deployment
 # target is the one thing in it that should not travel.
 
 name: deploy

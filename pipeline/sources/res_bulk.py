@@ -77,7 +77,7 @@ ICP_KATPO = ("220", "230", "240", "310")
 # and, by sampling, are mostly micro or dormant entities (9 % are
 # explicitly "v likvidaci", 45 % were founded after 2020). They enter
 # through the change notifications instead - the event finds the
-# company, per CLAUDE.md section 5 - which costs a few dozen lookups a
+# company, per ARCHITECTURE.md 6 - which costs a few dozen lookups a
 # week rather than a day of crawling.
 ICP_KATPO_UNKNOWN = ("000",)
 

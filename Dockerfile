@@ -64,7 +64,7 @@ EXPOSE 8000
 # 0.0.0.0, not 127.0.0.1: bound to loopback inside the container, the
 # port would be published and still refuse every connection from the host.
 #
-# No --reload here. It is what .claude/launch.json uses for development;
-# in an image it would watch files that nobody is editing and restart the
+# No --reload here. It is what a local dev launcher runs with; in an
+# image it would watch files that nobody is editing and restart the
 # server in the middle of a run.
 CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

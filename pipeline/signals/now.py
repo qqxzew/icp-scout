@@ -45,7 +45,8 @@ would miss the trigger the ICP calls out by name.
 
 What this module does NOT do: decide who goes into the final five. It
 produces claims, each with a snapshot to point at; scoring and selection
-are later stages, per the pipeline order in section 5 of CLAUDE.md.
+are later stages, per the pipeline order in section 4 of
+ARCHITECTURE.md.
 
 Run:
     python -m pipeline.signals.now 00543551

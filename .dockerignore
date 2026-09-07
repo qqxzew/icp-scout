@@ -11,7 +11,6 @@ docs/
 
 .git/
 .gitignore
-.claude/
 
 __pycache__/
 *.pyc
@@ -33,4 +32,4 @@ probe_urls.py
 Dockerfile
 .dockerignore
 README*
-CLAUDE.md
+ARCHITECTURE.md

@@ -237,7 +237,7 @@ def vacancy_richness(vacancies):
 
 
 # The ICP's own production divisions against the service ones that were
-# added to widen the field (CLAUDE.md 11: the five ICP examples span
+# added to widen the field (ARCHITECTURE.md 2: the five ICP examples span
 # three NACE sections, so "section C only" contradicted the brief). The
 # widening was right for candidate selection and wrong to forget at
 # selection time: NACE 41 construction qualified through the gate on a
@@ -259,8 +259,9 @@ NACE_SERVICE = {"38", "41", "42", "43", "49", "77", "81", "95"}
 #
 # The rest of it went for a better reason: the verdict is not solid
 # enough to move anybody. It is read out of website prose and job ads,
-# and CLAUDE.md's own record of checking it by hand is 0 clean answers
-# out of 3 companies - Robex says "na zakazku" and keeps a catalogue,
+# and the project's own record of checking it by hand is 0 clean
+# answers out of 3 companies (ARCHITECTURE.md 10) - Robex says "na
+# zakazku" and keeps a catalogue,
 # Laub says "kusova i seriova" on one page, Jaro says nothing. The ICP
 # itself marks the criterion "vyvod, ne fakt": no register carries it.
 # Ordering on a marketing sentence is exactly the kind of confident

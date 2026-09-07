@@ -204,7 +204,7 @@ def to_consider(days=7, source=DEFAULT_SOURCE, candidates_path=CANDIDATES, today
     It is the entry the base has for a company nobody has enriched -
     above all the 67 129 whose headcount the register never recorded,
     which are too many to crawl and are perfectly reachable this way.
-    The event finds the company (CLAUDE.md section 5); res_bulk.lookup()
+    The event finds the company (ARCHITECTURE.md 6); res_bulk.lookup()
     then decides whether the brief wants it.
     """
     found, meta = changes(source, days, today)

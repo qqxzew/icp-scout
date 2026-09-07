@@ -4,8 +4,9 @@ Four jobs, and each exists for a specific reason found while building
 the rest of the pipeline, not by default:
 
 1. KEY AND MODEL IN ONE PLACE. `.env` is read by hand - five lines of
-   stdlib, no dependency - per the project's own rule (CLAUDE.md 14):
-   only stdlib until a dependency earns its place, and reading
+   stdlib, no dependency - per the project's own rule
+   (ARCHITECTURE.md 9): only stdlib until a dependency earns its
+   place, and reading
    KEY=VALUE lines does not. Default model is one constant, so changing
    it is a one-line edit, not a grep across every prompt file.
 

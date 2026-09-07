@@ -278,7 +278,7 @@ def default_icp():
     an empty filter screen would ask the salesperson to retype a profile
     the prototype already knows. One list of NACE codes for both ends.
 
-    `location` is the brief's own geography, CLAUDE.md §2: "preferovaně
+    `location` is the brief's own geography, ARCHITECTURE.md §2: "preferovaně
     Plzensky kraj -> Karlovarsky, Jihocesky, Stredocesky, Praha (~150
     km)" - RTsoft sits in Plzen and drives to the shop floor. It is a
     priority ("preferovaně") in the ICP document - but the salesperson
@@ -449,7 +449,7 @@ def admit_newcomers(icos, icp, archive, run_id):
     thousand companies that changed nationally this week, ask which ones
     the brief would have wanted, and enrich only those.
 
-    This is the mechanism CLAUDE.md section 5 describes and the pipeline
+    This is the mechanism ARCHITECTURE.md section 6 describes and the pipeline
     never had - "the event finds the company, not the other way round",
     and its stated advantage is exactly this one: it finds companies the
     base does not contain yet.
