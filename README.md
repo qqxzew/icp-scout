@@ -1,597 +1,639 @@
 # icp-scout
 
-Vezme profil zákazníka, projde veřejné české rejstříky a jednou týdně vrátí pár firem,
-u kterých se **tenhle týden něco stalo** — s podkladem, ve kterém má každé tvrzení svůj
-stav a zdroj.
+[![live at icp-scout.fun](https://img.shields.io/badge/live-icp--scout.fun-38BDF8?style=for-the-badge)](https://icp-scout.fun)
+[![Čeština](https://img.shields.io/badge/%C4%8Ce%C5%A1tina-D7141A?style=for-the-badge)](README.cs.md)
+[![MIT](https://img.shields.io/badge/MIT-3DA639?style=for-the-badge)](LICENSE)
 
-Celý nástroj stojí na jedné větě: **model smí tvrzení navrhnout, ale faktem se stane
-jen to, co kód doslova najde v uloženém textu stránky.** Zbytek se označí jako úsudek,
-nebo se zahodí a spočítá.
+![Python 3.14](https://img.shields.io/badge/Python%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+![OpenAI API](https://img.shields.io/badge/OpenAI%20API-412991?style=for-the-badge)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
 
-Zatím jen pro Českou republiku — zdroje jsou české registry. Ostatní vrstvy (archiv,
-ověřování citací, okna signálů, výběr) na zemi nezávisí.
+Takes a customer profile, walks the public Czech registers, and once a week hands back
+a few companies **something actually happened to this week** — each with a dossier where
+every claim carries its own state and its own source.
 
-**Živě běží na [icp-scout.fun](https://icp-scout.fun)** — poslední týden, filtry
-i historie toho, co už jednou šlo ven. Je to ta samá instance, na kterou míří deploy
-níž: co je v `main`, je za minutu tam.
+The whole tool rests on one sentence: **the model may propose a claim, but nothing
+becomes a fact unless the code finds it verbatim in the stored text of the page.**
+Anything else is labelled an inference, or discarded and counted.
 
-Proč je to postavené takhle, do hloubky a s odkazy z kódu:
-[ARCHITECTURE.md](ARCHITECTURE.md). *In English: [README.en.md](README.en.md).*
+Czech Republic only for now — the sources are Czech registers. Everything above them
+(the archive, quote verification, signal windows, selection) does not depend on the
+country.
+
+**Running live at [icp-scout.fun](https://icp-scout.fun)** — the latest week, the
+filters, and the history of everything that has been handed over. It is the same
+instance the deploy below points at: what is in `main` is there a minute later.
+
+Why it is built this way, in depth and with the code pointing at it:
+[ARCHITECTURE.md](ARCHITECTURE.md). *Česká verze: [README.cs.md](README.cs.md).*
 
 ---
 
-## Co to není
+## What it is not
 
-- **Není to CRM ani odesílatel.** Nic sám neodesílá. Poslední slovo má vždycky člověk.
-- **Není to náhrada firemních databází.** Ty odpovídají na „jaké firmy existují".
-  Tohle odpovídá na „u kterých se něco pohnulo a co o tom umím doložit".
-- **Není to LLM wrapper, který si o firmě povídá.** Model nemá právo tvrdit; má právo
-  navrhnout něco, co pak kód ověří proti staženému textu.
-- **Není to nekonečný seznam.** Pět karet týdně je záměr, ne strop. Když jich poctivě
-  vyjde míň, odevzdá se míň — okno se nerozšiřuje, aby se kvóta naplnila.
+- **Not a CRM, and not a sender.** It sends nothing on its own. The last word is always
+  a human's.
+- **Not a replacement for company databases.** Those answer "which companies exist".
+  This one answers "which of them moved, and what can I prove about it".
+- **Not an LLM wrapper that chats about a company.** The model has no right to assert;
+  it has the right to propose something the code then checks against the fetched text.
+- **Not an endless list.** Five dossiers a week is the intent, not a ceiling. When
+  fewer come out honestly, fewer are handed over — the window is never widened to fill
+  a quota.
 
 ---
 
-## Jak vypadá výstup
+## What the output looks like
 
-Tvar karty. Hodnoty vázané na konkrétní firmu jsou nahrazené zástupnými, struktura
-a počítadla jsou skutečná:
+The shape of a dossier. Values tied to a specific company are replaced with
+placeholders; the structure and the counters are real:
 
 ```
-FIRMA s.r.o.   (IČO ········)
+COMPANY Ltd.   (reg. no. ········)
 
-  Sídlo             obec · okres · kraj                      ares.gov.cz/…
-  Vzdálenost        85 km od zvoleného bodu                  RÚIAN
-                    — pozor, provozovna je 230 km
-  Velikost          100-199 zaměstnanců                      ares.gov.cz/…-res
-  NACE              Výroba ostatních strojů                  ares.gov.cz/…-res
-  Obrat (závěrka)   123 456 000 Kč (2025)                    or.justice.cz/…
-  Web               firma.cz [proven]                        https://firma.cz
-  Certifikát        ISO 9001                                 firma.cz
+  Seat              town · district · region                 ares.gov.cz/…
+  Distance          85 km from the chosen point              RÚIAN
+                    — note, an establishment sits 230 km away
+  Headcount         100-199 employees                        ares.gov.cz/…-res
+  Industry          Manufacture of other machinery           ares.gov.cz/…-res
+  Turnover          123,456,000 CZK (2025)                   or.justice.cz/…
+  Website           company.cz [proven]                      https://company.cz
+  Certificate       ISO 9001                                 company.cz
 
-  Jednatel          ······ · jednatel, od 2019-04-01         ares.gov.cz/…-vr
-    ↳ kanál z webu  (žádný)
-  Jednatel          ······ · jednatel, od 2023-11-15         ares.gov.cz/…-vr
-    ↳ kanál z webu  ······@firma.cz                          firma.cz
-  Kontakt z webu    ······ · jednatel — dle webu
-    ↳ kanál         ······@firma.cz · +420 ·········         firma.cz
-  Kontakt firmy     prodej@firma.cz · +420 ·········         firma.cz
+  Director          ······ · director, since 2019-04-01      ares.gov.cz/…-vr
+    ↳ channel       (none)
+  Director          ······ · director, since 2023-11-15      ares.gov.cz/…-vr
+    ↳ channel       ······@company.cz                        company.cz
+  Contact from site ······ · director — per the website
+    ↳ channel       ······@company.cz · +420 ·········       company.cz
+  Company channel   sales@company.cz · +420 ·········        company.cz
 
-  Proč teď          ······ (jednatel) — opustil statutární orgán     ares.gov.cz/…-vr
+  Why now           ······ (director) — left the statutory body     ares.gov.cz/…-vr
 
-  Doklad            zpracování dokumentace, výroba, povrchová úprava…
-                    „doslovná věta, která se našla v archivovaném textu stránky"
-                                                             https://firma.cz/
+  Evidence          documentation, production, surface treatment…
+                    "the verbatim sentence found in the archived page text"
+                                                             https://company.cz/
 
-  6 ověřených faktů · 0 úsudků · 2 zahozeno při ověření · 3 nezapočteno (mimo signál)
+  6 verified facts · 0 inferences · 2 discarded in verification · 3 not counted
 ```
 
-**Poslední řádek je celý smysl.** Šest faktů znamená šest citací, které se doslova
-našly v textu stránky uložené i s URL a datem. *Zahozeno* znamená, že model vrátil
-citaci, která na stránce není — dál neprošla, ale karta o ní nemlčí. *Nezapočteno* jsou
-tvrzení, která ověřením prošla a přesto se nepočítají: druhá vrstva je označila za
-doslova pravdivá, ale mimo položenou otázku.
+**The last line is the whole point.** Six facts means six quotes that were found
+verbatim in a page stored together with its URL and date. *Discarded* means the model
+returned a quote that is not on the page — it went no further, but the dossier does not
+keep quiet about it. *Not counted* are claims that passed verification and still do not
+count: the second layer marked them as literally true but beside the question asked.
 
-Tři mechaniky, které z toho tvaru plynou:
+Three mechanics follow from that shape:
 
-- **Rozpor mezi zdroji se ukazuje, neschovává.** Když rejstřík říká, že člověk odešel
-  ze statutárního orgánu, a web ho pořád uvádí jako jednatele, stojí u jeho jména „dle
-  webu" a odchod je zároveň tím datovaným důvodem k hovoru. Kdyby obě role měly stejný
-  vzhled, vypadaly by stejně jistě.
-- **Vzdálenost se měří přes všechny adresy firmy.** Sídlo je poštovní adresa,
-  provozovna je místo činnosti, a který z bodů je dílna, rejstřík neříká. Dovnitř
-  poloměru se firma pustí na ten bližší — a karta má povinnost vytisknout ten
-  vzdálený.
-- **Chybějící údaj se tiskne jako chybějící.** Kde není obrat, je napsáno proč
-  („závěrka je sken bez textové vrstvy"), ne prázdno a ne odhad.
+- **A conflict between sources is shown, not hidden.** When the register says a person
+  left the statutory body and the website still lists them as a director, their name
+  carries "per the website" — and the departure is the dated reason to call. If both
+  roles looked the same on the page, they would look equally certain.
+- **Distance is measured across every address a company has.** The seat is a postal
+  address, an establishment is a place of business, and the register does not say which
+  one is the shop floor. A company is admitted inside the radius on the nearest point —
+  and the dossier is obliged to print the far one.
+- **A missing value is printed as missing.** Where there is no turnover, the reason is
+  printed ("the filing is a scan with no text layer"), not a blank and not an estimate.
 
-Totéž je i v prohlížeči. Rozhraní je statika bez buildu a má čtyři obrazovky. Aplikace
-se otevírá **týdnem** — pěti kartami v pořadí, ve kterém je výběr seřadil. Odtud vede
-odkaz na **podklad** jedné firmy, na **filtry** (profil) a na **historii**: co už jednou
-šlo ven, seskupené po bězích, i s tím, kolikrát ta firma šla ven celkem. Běh se spouští
-tlačítkem a stránka říká, jak je ten poslední starý.
+The same thing lives in the browser. The interface is static files with no build step
+and has four screens. The app opens on **the week** — five dossiers in the order the
+selection ranked them. From there you reach one company's **dossier**, the **filters**
+(the profile), and the **history**: everything that has ever gone out, grouped by run,
+with how many times that company went out in total. A run is started with a button and
+the page says how old the last one is.
 
-Historie je tam ze stejného důvodu jako počítadla na kartě: bez ní se nepozná, že se
-stejná firma nabízí potřetí. A firma, která mezitím z báze vypadla — rejstřík se mění,
-profil se mění —, zůstává v historii jako IČO bez jména. To je stav, ne chyba, a
-vynechat ji by znamenalo tvrdit, že se nikdy neodevzdala.
+History exists for the same reason as the counters on a dossier: without it you cannot
+tell that the same company is being offered for the third time. And a company that has
+since dropped out of the base — registers change, profiles change — stays in the
+history as a registration number with no name. That is a state, not an error, and
+leaving it out would be claiming it was never handed over.
 
 ---
 
-## Jádro: tvrzení modelu kontroluje kód
+## The core: the code checks the model
 
-Halucinace je u téhle úlohy hlavní riziko. Vymyšlené tvrzení o firmě, které někdo
-vloží do e-mailu, je horší než žádný výstup — a přesně tenhle způsob selhání většina
-nástrojů „AI pro sales" nijak neřeší.
+Hallucination is the main risk in this task. An invented claim about a company that
+somebody pastes into an email is worse than no output at all — and that is exactly the
+failure mode most "AI for sales" tools do nothing about.
 
-Tři stavy jednoho tvrzení, a rozhoduje mezi nimi **kód, ne model**:
+Three states for one claim, and **the code decides between them, not the model**:
 
-| stav | podmínka | co je vidět na kartě |
+| state | condition | what the dossier shows |
 |---|---|---|
-| **fakt** | citace se našla ve staženém textu stránky | tvrzení + citace + URL + datum |
-| **úsudek** | citace chybí, nebo je tvrzení z citace odvozené | označeno jako úsudek modelu |
-| **zahozeno** | model vrátil citaci, která na stránce není | dál neprojde, jen se spočítá |
+| **fact** | the quote was found in the fetched page text | claim + quote + URL + date |
+| **inference** | no quote, or the claim is derived from one | labelled as the model's inference |
+| **discarded** | the model returned a quote that is not on the page | goes no further, only gets counted |
 
-Model odpovídá strukturovaně (`response_format: json_schema`, `strict: true`) ve tvaru
-`{tvrzení, citace}`. Kód tu citaci hledá v uloženém textu — obyčejné hledání
-podřetězce, obě strany přes stejnou normalizaci. Žádné „nebuď si příliš jistý"
-v promptu, protože se nedá ověřit, jestli model poslechl. Žádný druhý model jako první
-instance, protože halucinuje taky. **Prompt prosí, aby se model choval správně;
-architektura zařizuje, že jinak to nejde.**
+The model answers in a structured shape (`response_format: json_schema`,
+`strict: true`): `{claim, quote}`. The code looks for that quote in the stored text —
+plain substring search, both sides through the same normalisation. No "don't be
+overconfident" in the prompt, because there is no way to check whether the model
+complied. No second model as the first line of defence, because it hallucinates too.
+**The prompt asks the model to behave; the architecture makes misbehaving impossible.**
 
-Proč přesná shoda a ne fuzzy porovnání: volnější shoda by se musela ladit a není proti
-čemu. Exaktní shoda po normalizaci je jediná varianta, která nepotřebuje kalibraci
-a nedá se obejít parafrází.
+Why exact matching and not fuzzy: a looser comparison would have to be tuned, and there
+is nothing to tune it against. Exact matching after normalisation is the only version
+that needs no calibration and cannot be defeated by paraphrase.
 
-Ověřuje se **každé tvrzení zvlášť, ne odpověď jako celek.** V jedné odpovědi modelu
-běžně žijí obojí — ověřitelná data i neověřitelný úsudek.
+**Every claim is verified on its own, not the answer as a whole.** A single model
+response routinely contains both — checkable data and uncheckable inference.
 
-**Co to nedokáže, řečeno nahlas.** Shoda dokazuje, že věta na stránce je — ne že
-odpovídá na položenou otázku. Jeden běh dal na kartu „Jednosměnný provoz" jako doklad
-rozsahu výroby, protože ta věta na stránce opravdu byla. Vedle ověřování proto stojí
-dvě pojistky, které do rozhodnutí fakt / úsudek / zahození nesahají:
-`verify.states_absence()` odmítá počítat bezcitační „o X se nikde nepíše" jako důkaz X,
-a soudce relevance (`llm/prompts/relevance.py`) může ověřený fakt označit za
-nepřípadný. **Ubírat smí, přidávat ne** — faktem se pořád stane jen to, co prošlo
-hledáním v textu.
+**What this cannot do, said out loud.** A match proves the sentence is on the page — not
+that it answers the question that was asked. One run put "single-shift operation" on a
+dossier as evidence of production scale, because that sentence really was there. So two
+guards sit beside the verifier, and neither of them touches the fact / inference /
+discard decision: `verify.states_absence()` refuses to count a quoteless "there is no
+mention of X" as evidence of X, and the relevance judge (`llm/prompts/relevance.py`) may
+mark a verified fact as beside the point. **It may subtract, never add** — a fact is
+still only what survived the search in the text.
 
-Nosný řádek schématu je `claim.snapshot_id NOT NULL REFERENCES snapshot(id)`. Tvrzení
-o firmě, které neukazuje na uložený snímek stránky, se do databáze fyzicky nevloží —
-„nic bez zdroje" tedy není disciplína, kterou si musí někdo pamatovat, ale cizí klíč.
+The load-bearing line of the schema is `claim.snapshot_id NOT NULL REFERENCES
+snapshot(id)`. A claim about a company that does not point at a stored page snapshot
+physically cannot be inserted — so "nothing without a source" is not a discipline
+anyone has to remember, it is a foreign key.
 
-### Archiv, ne cache
+### An archive, not a cache
 
-Cache existuje proto, aby se nestahovalo dvakrát. Tohle existuje proto, že se týden po
-běhu někdo zeptá „odkud to je" a stránka už bude jiná. Text se ukládá adresovaný přes
-SHA-256 obsahu, což řeší tři věci najednou: stejná stránka napříč běhy leží jednou;
-„změnilo se to od minule" je porovnání dvou hashů, takže detekce změn nepotřebuje
-vlastní mechanismus; a citaci nelze přišít k dokumentu, který se mezitím přepsal —
-jiný text je jiný hash.
+A cache exists so you do not fetch twice. This exists because a week after a run
+somebody will ask "where did that come from" and the page will have changed. Text is
+stored content-addressed by SHA-256, which buys three things at once: the same page
+across runs is stored once; "did this change since last week" is a comparison of two
+hashes, so change detection needs no separate mechanism; and a quote can never be
+pinned to a document that was rewritten afterwards — different text is a different hash.
 
-Řádově z reálného provozu: půl milionu snímků, přes 200 tisíc odlišných dokumentů,
-kolem tisíce uložených tvrzení a k tomu necelé dvě stovky zahozených, které se
-pamatují taky.
-
----
-
-## Jak běh vypadá
-
-Pořadí není náhoda: **levné a strukturované napřed, drahé a špinavé nakonec.**
-
-```
-1 icp       profil z rozhraní; zapíše se k běhu
-2 refresh   jen to, co se opravdu pohnulo — dávky změn z rejstříku řeknou,
-            kterých firem se to týká, a přenačtou se jen ty
-3 gate      profil (obor, velikost, region), negativní filtry, a nakonec
-            NOW: bez datované události firma končí tady
-4 enrich    web, kontakty, certifikáty — VÝHRADNĚ pro ty, co prošly branou
-5 agents    průchod LLM, opět jen nad těmi, co prošli
-6 select    pořadí podle toho, co se skutečně doložilo
-7 cards     vykreslení a zápis, co se odevzdalo
-```
-
-Drahý krok je `enrich` — obchází weby firem. Nad celou bází jsou to hodiny, nad deseti
-firmami minuty. Brána proto stojí **před** ním. Není to optimalizace dodělaná potom,
-je to důvod, proč se týdenní běh vejde do minut a proč volání modelu za jeden běh
-stojí desetníky. (Cena se neodhaduje: každé volání se zapisuje do
-`data/llm_usage.jsonl` i s tokeny a cenou.)
-
-**Detekce změn je tažená, ne tlačená.** Nechodíme po firmách a neptáme se, jestli se
-něco stalo — přijde dávka změn z rejstříku a spáruje se s bází podle IČO. Změn je
-v republice za týden několik tisíc, našich z toho pár desítek. Cena tedy neroste
-s velikostí báze, událost přichází s datem ze státního rejstříku a najdou se i firmy,
-které v bázi ještě nejsou.
+Orders of magnitude from real operation: half a million snapshots, over 200 thousand
+distinct documents, roughly a thousand stored claims, and just under two hundred
+discards, which are remembered too.
 
 ---
 
-## „Proč teď": každý zdroj má vlastní okno
+## What a run looks like
 
-Tohle je zjištění, které vysvětlilo, proč měsíce vypadal jako funkční jen jeden signál.
-Byl to jediný funkční signál — **tři zdroje ze čtyř publikují pomaleji, než se běh
-opakuje.** Ptát se jich „co bylo za posledních sedm dní" znamená chtít po nich něco, co
-ještě fyzicky neobsahují, a dostat zpátky nulu, která neříká nic.
+The order is not accidental: **cheap and structured first, expensive and dirty last.**
 
-| zdroj | zpoždění (naměřeno) | okno |
+```
+1 icp       the profile from the interface; recorded on the run
+2 refresh   only what actually moved — the register's change batches say
+            which companies are affected, and only those are re-fetched
+3 gate      the profile (industry, size, region), the negative filters, and
+            finally NOW: with no dated event the company stops here
+4 enrich    site, contacts, certificates — ONLY for those past the gate
+5 agents    the LLM pass, again only over the survivors
+6 select    ranking by what was actually proved
+7 cards     rendering, and recording what was handed over
+```
+
+The expensive step is `enrich` — it crawls company websites. Over the whole base that is
+hours; over ten companies it is minutes. That is why the gate comes **first**. It is not
+an optimisation bolted on afterwards, it is the reason a weekly run fits into minutes
+and the reason the model calls for one run cost pennies. (The cost is not estimated:
+every call is appended to `data/llm_usage.jsonl` with its tokens and its price.)
+
+**Change detection is pull-based, not push-based.** We do not walk the companies asking
+whether anything happened — a batch of changes arrives from the register and is matched
+against the base by registration number. There are a few thousand changes nationally in
+a week and a few dozen of ours. The cost therefore does not grow with the size of the
+base, the event arrives with a date from a state register, and companies the base does
+not contain yet get found too.
+
+---
+
+## "Why now": every source keeps its own window
+
+This is the finding that explained why, for months, only one signal appeared to work.
+It was the only signal that worked — **three of the four sources publish more slowly
+than the run repeats.** Asking them "what happened in the last seven days" is asking for
+something they physically do not contain yet, and getting back a zero that says nothing.
+
+| source | lag (measured) | window |
 |---|---|---|
-| obchodní rejstřík | 2 dny | okno běhu, 7 dní |
-| inzeráty | 10 dní | `VACANCY_WINDOW` = 24 dní |
-| dotace | 35 dní | `SUBSIDY_WINDOW` = 120 dní |
-| veřejné zakázky | týž den | žádné — rozhoduje lhůta pro podání |
+| commercial register | 2 days | the run's own, 7 days |
+| job postings | 10 days | `VACANCY_WINDOW` = 24 days |
+| subsidies | 35 days | `SUBSIDY_WINDOW` = 120 days |
+| public tenders | same day | none — the bid deadline decides |
 
-Šířka okna se odvozuje, nevolí: `zpoždění + kadence běhu`, a to dvakrát, aby signál
-nepropadl mezi dvěma běhy. Zpoždění se přeměřuje při každém běhu a nástroj varuje,
-jakmile konstanta přestane kadenci pokrývat. Měří se 1. percentil stáří záznamů, ne
-nejčerstvější řádek: ten je jeden z desítek tisíc a lže třikrát.
+The width is derived, not chosen: `lag + run cadence`, taken twice so a signal cannot
+fall between two runs. The lag is re-measured on every run and the tool warns as soon as
+a constant stops covering the cadence. What is measured is the 1st percentile of record
+age, not the freshest row: that one is one in tens of thousands and lies by a factor of
+three.
 
-Kolik toho takový signál unese, se dá spočítat dopředu. Zpětný test přes 104 týdnů:
-medián patnáct firem s událostí týdně, z toho osm takových, které projdou podmínkou
-výdeje. Alespoň pět jich vyšlo v 89 ze 104 týdnů — pětka se udrží, ale bez rezervy,
-a to je argument pro další zdroje, ne pro širší okno.
+How much such a signal can carry is calculable in advance. A backtest across 104 weeks:
+a median of fifteen companies with an event per week, eight of which pass the delivery
+condition. At least five came out in 89 of 104 weeks — the five hold, but with no
+reserve, and that is an argument for more sources rather than a wider window.
 
 ---
 
-## Kdo se odevzdá a kdo ne
+## Who gets handed over and who does not
 
-Tvrdá podmínka: firma jde ven jen s **doloženou doménou** (`proven`, ne `probable`)
-a **alespoň jedním kanálem**. Zeměpis je striktní: zvolený poloměr bez výjimek, měřený
-přes všechny adresy firmy.
+The hard condition: a company goes out only with a **proven domain** (`proven`, not
+`probable`) and **at least one channel**. Geography is strict: the chosen radius with no
+exceptions, measured across every address the company has.
 
-Cena je vyčíslená a placená vědomě: firma bez doložené domény se neodevzdá nikdy.
-Důvod je změřený — z uhodnutých domén, které skutečně žijí, jich **46 % patří jiné
-firmě**. Bez toho pravidla nosí podklad text cizí firmy a kontakt cizího člověka; to se
-jednou stalo a od té doby platí tvrdý zákaz.
+The price is quantified and paid deliberately: a company without a proven domain is
+never handed over. The reason is measured — of the guessed domains that turn out to be
+live sites, **46 % belong to a different company**. Without that rule the dossier
+carries another company's text and a stranger's contact; it happened once, and the ban
+has been absolute since.
 
-Firma, která podmínkou neprojde, nedostane ani řádek — její karta by nesla jméno, IČO
-a jednu větu z rejstříku, což je zrovna ten seznam, kterým výstup být nemá. Počet
-zadržených ale zůstává v hlavičce týdne.
+A company that fails the condition does not even get a line — its dossier would carry a
+name, a registration number and one sentence from the register, which is precisely the
+list the output is not supposed to be. The count of the withheld does stay in the
+week's header.
 
-Pořadí neurčuje součet skóre, ale **třída důvodu**:
+Ranking is not a sum of scores, it is the **class of the reason**:
 
 ```
-A dotace bez zahájené zakázky   (peníze jsou, nákup nezačal)
-B změna ve vedení nebo vlastnictví
-C otevřená veřejná zakázka
-D inzerát na řídící/plánovací roli
-E jiná událost
+A subsidy with no tender started   (the money is there, the buying has not begun)
+B change in management or ownership
+C an open public tender
+D a posting for a management/planning role
+E some other event
 ```
 
-Uvnitř toho se řadí: skupina profilu → negativní nález → třída důvodu → potvrzení
-druhým signálem → vzdálenost → čerstvost uvnitř třídy → počet faktů jako rozhodčí
-kritérium.
+Within that the order is: profile group → negative finding → class of reason →
+corroboration by a second signal → distance → freshness within the class → number of
+facts as the tie-break.
 
-Nejlepší řádek **každé** třídy zabere slot dřív, než kterákoli třída obsadí druhý.
-Není to rozmanitost pro rozmanitost: kalibrovat váhy není na čem, a týden z pěti
-stejných důvodů je jeden pokus provedený pětkrát. Cena se říká nahlas — firma na
-rezervovaném slotu je v pořadí níž než ta, kterou vytlačila, a musí to vytisknout.
+The best row of **each** class takes a slot before any class takes a second one. This is
+not diversity for its own sake: there is nothing to calibrate weights against, and a
+week of five identical reasons is one experiment run five times. The price is stated out
+loud — a company in a reserved slot ranks below the one it displaced, and has to print
+that.
 
 ---
 
-## Zdroje
+## Sources
 
-| zdroj | co dává | poznámka |
+| source | what it gives | note |
 |---|---|---|
-| **RES** (bulk CSV) | první výběr: velikost, obor, okres | celý registr jedním souborem, filtruje se lokálně — nula HTTP dotazů |
-| **ARES**, 4 GET endpointy | identita, sídlo, insolvence, velikost, statutární orgány a vlastníci **s daty**, živnosti, provozovny | strukturovaný záznam s datem ze státního rejstříku — nejčistší signál, jaký je k dispozici |
-| **ARES notifikace** | denní dávky změn — kdo se pohnul | týdenní aktualizace v řádu minut místo hodin; historie dávek ~30 dní |
-| **RÚIAN** | souřadnice adresního místa | vzdálenost k nejbližší adrese firmy |
-| **web firmy** | provozní signály, kontakty | adresa webu není v žádném rejstříku — hádá se a **dokazuje** (IČO, DIČ, WHOIS, adresa) |
-| **WHOIS CZ.NIC** (port 43) | vlastník domény | důkazní nástroj, ne zdroj kontaktů; limit naměřen na 1 dotaz/s |
-| **MPSV** | inzeráty, denní JSON + archiv přírůstků | zdroj růstového signálu |
-| **dotace** | měsíční XLSX, projekty s datem podpisu | pozor: dotace se dává na projekt, ne firmě — většina projektů je o něčem jiném |
-| **NEN** | veřejné zakázky | sloupec stavu rozliší „kupuje teď" od „už koupil" |
-| **Sbírka listin** | obrat z účetní závěrky | **do výběru nevstupuje**, jen doplňuje kartu — čitelný výkaz má 16,5 % firem |
+| **RES** (bulk CSV) | the first cut: size, industry, district | the whole register in one file, filtered locally — zero HTTP requests |
+| **ARES**, 4 GET endpoints | identity, seat, insolvency, size, statutory bodies and owners **with dates**, trades, establishments | a structured record with a date from a state register — the cleanest signal available |
+| **ARES notifications** | daily change batches — who moved | a weekly update in minutes instead of hours; batch history ~30 days |
+| **RÚIAN** | coordinates of an address point | distance to the company's nearest address |
+| **company website** | operational signals, contacts | the address of a website is in no register — it is guessed and then **proven** (reg. no., VAT id, WHOIS, address) |
+| **WHOIS CZ.NIC** (port 43) | domain owner | a tool of proof, not a source of contacts; the rate limit measured at 1 query/s |
+| **MPSV** | job postings, daily JSON + an archive of increments | the growth signal |
+| **subsidies** | monthly XLSX, projects with a signature date | careful: a subsidy is granted for a project, not to a company — most projects are about something else |
+| **NEN** | public tenders | the status column separates "buying now" from "already bought" |
+| **Collection of Deeds** | turnover from the annual accounts | **takes no part in selection**, it only fills the dossier — a readable statement exists for 16.5 % of companies |
 
-Dotace a zakázka jsou dva okamžiky jednoho nákupu a potřeba jsou oba:
+A subsidy and a tender are two moments of one purchase, and both are needed:
 
-| dotace | zakázka | význam |
+| subsidy | tender | meaning |
 |---|---|---|
-| je | **není** | peníze jsou, nákup nezačal — nejzajímavější případ |
-| je | otevřená | kupují, zadání už je napsané |
-| je | uzavřená | koupili, pozdě |
-| není | je | kupují za své |
+| yes | **no** | the money is there, buying has not begun — the most interesting case |
+| yes | open | they are buying, the spec is already written |
+| yes | closed | they bought, too late |
+| no | yes | they are buying with their own money |
 
-Signál má u obou dvojí význam — příležitost s rozpočtem, nebo zákazník už sebraný
-konkurencí. Nekóduje se; ukáže se s poznámkou a rozhodne člověk.
+The sign of the signal is ambiguous in both cases — an opportunity with a budget, or a
+customer already taken by a competitor. It is not encoded; it is shown with a note and a
+human decides.
 
-### Negativní filtry
+### Negative filters
 
-Kategorie „formálně sedí, ale nikdy nekoupí" v žádném profilu nebývá, a přitom ušetří
-nejvíc práce. Firma v insolvenci splňuje každý řádek zadání a prodat se jí nedá nic.
-Vyhazuje se to **před** drahými kroky, dokud je to levné.
+The category "formally a match, but will never buy" appears in no profile, and yet it
+saves the most work. A company in insolvency satisfies every line of the brief and there
+is nothing to sell it. It is thrown out **before** the expensive steps, while that is
+still cheap.
 
-### Co se nepoužilo a proč
+### What was not used, and why
 
-- **Klíčová slova v inzerátech jako důkaz vnitřního procesu** — změřeno na jednom
-  z nich: 1,84 % záznamů a přesnost kolem nuly. Inzerát je psaný pro uchazeče, ne pro
-  nás.
-- **Registr smluv jako zdroj nákupů soukromých firem** — zveřejňovat musí jen veřejné
-  instituce; soukromá firma se tam objeví leda jako protistrana.
-- **Inspekce práce** — po firmách veřejná data neexistují, jen agregované roční zprávy.
-- **Scraping za přihlášením** — nepřípustné technicky i podle podmínek služeb.
-- **Placené databáze** — mimo záměr projektu.
-- **Cokoli, co vyžaduje ruční práci na každou firmu** — může to být skvělý zdroj, ale
-  patří na ruční dohledání už vybraných firem, ne do výběru.
-
----
-
-## Skóre, které se neukázalo
-
-Tahle sekce je tu proto, že negativní výsledek je taky výsledek a jinde se o něm mlčí.
-
-Původně existovalo vážené skóre, které mělo firmy řadit. **Už nerozhoduje o ničem**,
-a není to zjednodušení, je to změřené:
-
-- součet z osmi členů se choval jako jeden — jediná složka nesla 62,6 % bodů
-  a korelovala **+0,81** s počtem stažených stránek. Pořadí se tedy z velké části
-  určovalo podle toho, čí web je největší;
-- tutéž pětku dávalo 35 % z 500 náhodných vektorů vah, takže „naladěné" váhy nic
-  neurčovaly;
-- proti ručně označené kontrolní skupině neoddělily nic ani stavěné komponenty
-  (p = 0,72–1,00), ani embedding webu v 1536 dimenzích (AUC 0,39).
-
-Strop je ve zdroji: **z veřejného textu webu se to prostě poznat nedá.** Skóre proto
-zůstalo tím, čím být poctivě může — obsahem karty, kterou čte člověk.
-
-Jedna věc se ale změřit dala. **Potvrzení druhým signálem** — dvě různé události
-najednou — bylo jediné s reálným liftem: **1,85**, tedy 24 % proti základním 13 %.
-Proto je to krok v řazení a proto se počítá po druzích událostí, ne po jejich rodinách:
-tak to bylo naměřeno a při hrubším počítání ta úroveň nevystřelí nikdy.
+- **Keywords in job postings as evidence of an internal process** — measured on one of
+  them: 1.84 % of records and precision near zero. A posting is written for applicants,
+  not for us.
+- **The public contracts register as a source of private-company purchases** — only
+  public institutions are required to publish; a private company appears there at most
+  as a counterparty.
+- **Labour inspection** — no per-company public data exists, only aggregate annual
+  reports.
+- **Scraping behind a login** — inadmissible technically and under the services' terms.
+- **Paid databases** — outside the intent of the project.
+- **Anything requiring manual work per company** — it may be an excellent source, but it
+  belongs to manual follow-up on companies already selected, not to the selection.
 
 ---
 
-## Kde to má strop
+## The score that did not hold up
 
-Tohle patří do README, ne do issue trackeru — jsou to vlastnosti zdrojů, ne chyby
-k opravení.
+This section exists because a negative result is a result too, and elsewhere nobody
+mentions them.
 
-| co | v čem je problém |
+There used to be a weighted score meant to rank companies. **It no longer decides
+anything**, and that is not a simplification, it is measured:
+
+- the sum of eight terms behaved like one — a single component carried 62.6 % of the
+  points and correlated **+0.81** with the number of pages fetched. The ranking was
+  therefore largely deciding by whose website was biggest;
+- the same five came out of 35 % of 500 random weight vectors, so "tuned" weights were
+  determining nothing;
+- against a hand-labelled control group nothing separated anything — neither the
+  hand-built components (p = 0.72–1.00) nor a 1536-dimension embedding of the same sites
+  (AUC 0.39).
+
+The ceiling is in the source: **the public text of a website simply does not say it.**
+So the score became what it can honestly be — the evidence a human reads on the dossier.
+
+One thing did measure, though. **Corroboration by a second signal** — two different
+events at once — was the only feature with real lift: **1.85**, i.e. 24 % against a 13 %
+base rate. That is why it is a step in the ordering, and why it is counted by kind of
+event rather than by family: that is how it was measured, and counted more coarsely that
+level never fires at all.
+
+---
+
+## Where the ceiling is
+
+This belongs in the README rather than in an issue tracker — these are properties of the
+sources, not bugs to be fixed.
+
+| what | the problem |
 |---|---|
-| Rejstříková událost ≠ změna vedení | jediný signál rychlejší než běh — a asi třetina nálezů není to, co se zdá. Měřeno na ročním vzorku: u 28 % vlastnických změn je vlastníkem právnická osoba, tedy přesun uvnitř holdingu; 29 % příchodů do statutárního orgánu jsou lidé, kteří v záznamu té firmy už figurují. Dalších 27 % byly přeregistrace, které odfiltruje `drop_reentries()`. |
-| Rejstřík vidí jen vrchol | povýšení uvnitř firmy se do rejstříku nedostane nikdy. Nejověřitelnější signál je zároveň nejméně prediktivní: medián mezi rejstříkovou událostí a nákupem vychází kolem 290 dní. |
-| Zakázky nejsou na jednom místě | NEN je jen jeden z certifikovaných profilů zadavatele; ostatní zatím neobcházíme, takže část zakázek uniká. |
-| Doména skupiny ≠ doména firmy | část domén je doložená přes mateřskou společnost nebo sdílená kvůli rodovému názvu. Tvrzení odtud je o skupině, ne o tom konkrétním IČO. |
-| Osoba vs. obecný kanál | konkrétní člověk je dohledatelný zhruba u dvou pětin firem, u třetiny je jen podatelna a ústředna. Osobní adresa se **nedá dopočítat** ze jména, jen spárovat s napsanou — a když jsou v rejstříku dva lidé stejného jména, nespáruje se nic a karta napíše proč. |
-| Přesnost kontaktů na celé bázi | ověřená jen na vzorku, který se skutečně odevzdal. Nejslabší úroveň (jméno a číslo, které spolu jen sousedí na stránce) spolehlivá není a je jako taková označená. |
-| Kalibrace | není na čem ladit — ručně označených firem je pár desítek a rozdíl neukázaly. Pořadí je proto vysvětlitelné po řádcích, ne optimalizované. |
-| Zpětná vazba | žádná. Nástroj ví, co odevzdal a kdy — historie to i ukazuje —, ale ne jak to dopadlo. Pořadí se proto nemá z čeho učit. |
+| A register event ≠ a change of management | the only signal faster than the run — and about a third of the finds are not what they look like. Measured on a year's sample: in 28 % of ownership changes the owner is a legal entity, i.e. a move inside a holding; 29 % of arrivals into a statutory body are people already present in that company's own record. Another 27 % were re-registrations, which `drop_reentries()` filters out. |
+| The register only sees the top | a promotion inside a company never reaches the register. The most verifiable signal is also the least predictive: the median between a register event and a purchase comes out around 290 days. |
+| Tenders are not in one place | NEN is only one of the certified contracting-authority profiles; the others are not crawled yet, so part of the buying is missed. |
+| A group's domain ≠ a company's domain | some domains are proven through a parent company, or shared because of a generic name. A claim from there is about the group, not about that specific registration number. |
+| A person vs. a general channel | a specific human is findable for roughly two fifths of companies; for a third there is only a front desk and a switchboard. A personal address **cannot be derived** from a name, only matched against a printed one — and when the register holds two people of the same name, nothing is matched and the dossier says why. |
+| Contact accuracy across the whole base | verified only on the sample that was actually handed over. The weakest tier (a name and a number that merely sit next to each other on a page) is not reliable, and is labelled as such. |
+| Calibration | there is nothing to tune against — a few dozen hand-labelled companies, and they showed no difference. The ranking is therefore explainable line by line, not optimised. |
+| Feedback | none. The tool knows what it handed over and when — the history even shows it — but not how it went. So the ranking has nothing to learn from. |
 
-Jedna zákonitost, která se v projektu projevila pětkrát (historický záznam vydávaný za
-aktuální, chybějící deduplikace, `timeout`, který nehlídá celý přenos, slepené domény,
-odmítnutí DNS resolveru pod zátěží): **každý krok, který něco firmě připisuje, se musí
-kontrolovat otázkou „kolik firem dostalo tutéž odpověď".** Na jedné firmě je takový
-defekt z principu neviditelný.
+One regularity showed up five times in this project (a historical record passed off as
+current, missing deduplication, a `timeout` that does not bound the whole transfer,
+glued-together domains, a DNS resolver refusing under load): **every step that attributes
+something to a company has to be checked with the question "how many companies got the
+same answer".** On a single company a defect like that is invisible by construction.
 
-Zvlášť to platí o výjimkách. Timeout, `socket.gaierror` ani 403 neznamenají „firma to
-nemá" — znamenají, že se zdroj neozval. Nedostupný zdroj proto vrací `None`, ne prázdný
-seznam; jeden takový záměn stál doklady u dvou tisíc firem.
+That goes double for exceptions. A timeout, a `socket.gaierror` or a 403 do not mean
+"the company does not have one" — they mean the source did not answer. An unreachable
+source therefore returns `None`, not an empty list; one such conflation cost the evidence
+of two thousand companies.
 
-A jedno pozorování o metodě: dva automatické experimenty vrátily hladká čísla, zatímco
-dvě hodiny s otevřenými weby našly dva defekty, oba kazily špičku výstupu. **Čtení
-karet očima je nástroj, ne formalita.**
+And one observation about method: two automated experiments returned smooth numbers,
+while two hours with the websites open found two defects, both of them spoiling the top
+of the output. **Reading the dossiers with your own eyes is a tool, not a formality.**
 
 ---
 
-## Rychlý start
+## Quick start
 
-Python 3.14, šest připnutých závislostí, zbytek standardní knihovna.
+Python 3.14, six pinned dependencies, the rest is the standard library.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Klíč k modelu do `.env` (`OPENAI_API_KEY=sk-…`) nebo do prostředí. Adresář `data/` je
-celý v `.gitignore` — je odvozený a znovu stažitelný —, takže čerstvý klon nemá data
-žádná. Nejdřív se zeptejte, co chybí:
+The model key goes into `.env` (`OPENAI_API_KEY=sk-…`) or into the environment. The
+`data/` directory is entirely in `.gitignore` — it is derived and re-downloadable — so a
+fresh clone has no data at all. Start by asking what is missing:
 
 ```bash
 python -m pipeline.run --check
 ```
 
-Vypíše každý předpoklad: co to je, která fáze ho potřebuje a jestli si ho umí opatřit
-sám. Co umí, postaví:
+It prints every prerequisite: what it is, which stage needs it, and whether it can
+fetch it itself. Whatever it can, it builds:
 
 ```bash
 python -m pipeline.run --bootstrap
 ```
 
-První stavba je zdaleka nejdelší část celého provozu — stahuje se registr a obchází se
-weby. Jediné, co si nástroj obstarat neumí, je API klíč: ten pojmenuje a zastaví se.
-Bootstrap, který půlku tiše zvládne, je horší než ten, který řekne, který krok je váš —
-každý další soubor se odvozuje z předchozího, takže pokračovat bez toho prvního znamená
-vyrobit řetěz prázdných souborů, které vypadají jako pravé. Ze stejného důvodu se
-u velkých souborů nekontroluje jen „existuje": stažení, které umře v půlce, projde
-každým testem existence a pak tiše vrátí zkrácený seznam.
+The first build is by far the longest part of the whole operation — the register is
+downloaded and the websites are crawled. The one thing the tool cannot obtain for you is
+the API key: it names it and stops. A bootstrap that quietly half-works is worse than
+one that says which step is yours — every later file is derived from the one before it,
+so continuing without the first means producing a chain of empty files that look real.
+For the same reason large files are not checked merely for existence: a download that
+dies halfway passes every existence test and then quietly yields a truncated list.
 
-Ten seznam předpokladů má vlastní historii, protože se mýlil na obě strany a pokaždé
-potichu. První čistá stavba doběhla, ohlásila úspěch — a nechala po sobě stroj, na
-kterém nešlo postavit rozhraní, protože v seznamu chyběl číselník oborů. Chybějící
-soubor se zakázkami zase neshodil vůbec nic: jen se v žádném týdnu nemohl objevit důvod
-třídy C a nikde nestálo proč. **Mlčení je horší selhání než pád**, takže se do seznamu
-dostalo obojí.
+That prerequisite list has a history of its own, because it was wrong in both directions
+and quietly each time. The first clean build finished, reported success — and left a
+machine where the interface could not be built at all, because the industry codebook was
+missing from the list. A missing tenders file, in turn, broke nothing: it just meant a
+class C reason could never appear in any week, and nothing said why. **Silence is a worse
+failure than a crash**, so both are in the list now.
 
-Pak už jen:
+Then it is just:
 
 ```bash
-python -m pipeline.run                               # týdenní běh
-python -m pipeline.run --stage gate --stage select   # jen některé fáze
+python -m pipeline.run                               # the weekly run
+python -m pipeline.run --stage gate --stage select   # selected stages only
 python -m pipeline.run --window 14 --top 5
 ```
 
-Rozhraní — jeden proces obsluhuje statiku i `/api`:
+The interface — one process serves both the static files and `/api`:
 
 ```bash
 python -m uvicorn api.main:app --port 8000
 ```
 
-Data pro obrazovky staví `--bootstrap` sám; po aktualizaci registru se přepočítají
-`python -m pipeline.build_ui_data`.
+The data behind the screens is built by `--bootstrap` itself; after a register update
+recompute it with `python -m pipeline.build_ui_data`.
 
-Každý zdroj má vlastní CLI a jde spustit samostatně, což je zároveň nejrychlejší
-způsob, jak se v kódu zorientovat:
+Every source has its own CLI and runs standalone, which is also the fastest way to find
+your way around the code:
 
 ```bash
 python -m pipeline.sources.ares 29092540
 python -m pipeline.evidence.archive --stats
-python -m pipeline.scoring.card <ičo> --no-fetch
+python -m pipeline.scoring.card <reg-no> --no-fetch
 ```
 
-### Profil se zadává v rozhraní, ne v kódu
+### The profile is entered in the interface, not in the code
 
-Profil je vstup, ne konstanta — proto může být repozitář veřejný a přitom použitelný na
-cizí data. Uloží se do `web/icp.json`, což je **ten samý soubor**, který čte
-`pipeline/run.py`; jedno místo pro obojí. V repozitáři je jeden ukázkový profil, aby
-obrazovky nezačínaly prázdné; přepíše se ve dvou krocích a další běh jede podle
-nového. Prázdné pole přitom neznamená „všechno" — znamená „nikdo se ještě nerozhodl"
-a použije se výchozí hodnota.
+The profile is input, not a constant — which is why this repository can be public and
+still usable on somebody else's data. It is saved to `web/icp.json`, which is **the same
+file** `pipeline/run.py` reads; one place for both ends. The repository ships one example
+profile so the screens do not start empty; you overwrite it in two steps and the next run
+follows yours. An empty field does not mean "everything" — it means "nobody has decided
+yet", and the default is used.
 
 ---
 
-## Nasazení
+## Deployment
 
-Push do `main` a za minutu běží demo na tom commitu.
+Push to `main` and a minute later the demo is running that commit.
 
 ```
 push → GitHub Actions → git archive | ssh → receive.sh → rsync → build → restart → smoke test
 ```
 
-Celý přenos je jedna roura: `git archive` na runneru rovnou do `deploy/receive.sh` přes
-ssh. Žádný registry, žádný checkout na serveru — **server tedy k tomuhle repozitáři
-nepotřebuje žádné přihlašovací údaje**, a to je celý důvod, proč to není `git pull` na
-druhé straně.
+The whole transfer is one pipe: `git archive` on the runner straight into
+`deploy/receive.sh` over ssh. No registry, no checkout on the server — **the server
+therefore needs no credentials for this repository**, and that is the entire reason it is
+not a `git pull` on the far end.
 
-Rozhodnutí, která za vysvětlení stojí:
+Decisions worth explaining:
 
-- **Deploy nikdy nespouští běh.** Týdenní běh trvá dlouho a utrácí za model, takže
-  zůstává rozhodnutím člověka, ne vedlejším efektem pushnutého kódu.
-- **A hlavně ho nesmí zabít.** Běh je podproces uvnitř kontejneru, takže restart by ho
-  poslal k zemi. Skript se proto nejdřív zeptá, jestli něco běží; když ano, odmítne
-  restartovat a skončí nenulově. Nic se neztrácí — soubory jsou nasyncované, image
-  postavená, stačí deploy zopakovat, až běh doběhne. Deploy, který se neprojevil, nesmí
-  svítit zeleně.
-- **Klíč umí jen tohle.** V `authorized_keys` má `command="…/receive.sh"`, takže s ním
-  nejde otevřít shell ani forwardovat port. Na stroji, kde běží i cizí web, je obyčejný
-  deploy klíč v secretu totéž co root shell pro každého, kdo si přečte log workflow.
-- **Co se nikdy nepřepisuje:** `.env`, `data/` a `web/icp.json`. První dvě v repozitáři
-  nejsou vůbec; třetí ano — proto je vyloučený jmenovitě, ne doufáním. Uložený profil je
-  vstup uživatele, ne build artefakt.
-- **Rsync s `--delete`,** aby soubor smazaný v gitu zmizel i na serveru. Dvakrát to
-  kouslo: skript rsyncuje sám sebe za běhu (bezpečné jen proto, že rsync píše dočasný
-  soubor a přejmenovává ho) a napoprvé se rovnou smazal, protože na serveru existoval
-  a v gitu ne. Co tenhle deploy potřebuje, musí být v gitu.
-- **Smoke test vede přes Caddy**, ne přes port aplikace — to je cesta, kterou jde
-  návštěvník. Kontroluje se i jedna karta, protože ten endpoint už jednou spadl tiše:
-  vracel 404 na každou firmu, zatímco všechny stránky dál odpovídaly 200. Nakonec se
-  totéž zeptá zvenčí přes veřejnou adresu, protože tunel nebo DNS můžou být dole, i když
-  jsou všechny kontejnery zdravé.
-- **`.gitattributes` vynucuje LF** u všeho, co server spouští. Píše se to na Windows,
-  nasazuje na Linux a přenos je `git archive` — takže co uloží git, to bash na druhé
-  straně provede, a skript s CRLF spadne na prvním řádku hláškou, která neřekne proč.
+- **The deploy never starts a run.** A weekly run takes a long time and spends money on
+  the model, so it stays a human decision rather than a side effect of pushing code.
+- **And above all it must not kill one.** A run is a subprocess inside the container, so
+  a restart would take it down. The script asks first whether one is going; if so, it
+  refuses to restart and exits non-zero. Nothing is lost — the files are synced and the
+  image is built, so re-running the deploy once the run finishes picks it up. A deploy
+  that did not take effect must not show green.
+- **The key can do only this.** In `authorized_keys` it carries
+  `command="…/receive.sh"`, so it cannot open a shell or forward a port. On a machine
+  that also serves somebody else's site, a plain deploy key in a secret is a root shell
+  for anyone who can read a workflow log.
+- **What is never overwritten:** `.env`, `data/` and `web/icp.json`. The first two are
+  not in the repository at all; the third is — which is why it is excluded by name
+  rather than by hoping. A saved profile is user input, not a build artefact.
+- **Rsync with `--delete`,** so a file removed in git disappears from the server too.
+  That has bitten twice: the script rsyncs over itself while running (safe only because
+  rsync writes a temporary file and renames it), and the first time it deleted itself
+  outright, because it existed on the server and not in git. Whatever this deploy needs
+  must be in git.
+- **The smoke test goes through Caddy**, not through the app's own port — that is the
+  path a visitor takes. One dossier is checked too, because that endpoint once failed
+  silently: it answered 404 for every company while every page kept returning 200.
+  Finally the same question is asked from outside over the public address, because the
+  tunnel or DNS can be down while every container is healthy.
+- **`.gitattributes` pins LF** on everything the server executes. It is written on
+  Windows, deployed to Linux, and the transfer is `git archive` — so whatever git stores
+  is what bash executes on the far end, and a script with CRLF fails on its first line
+  with a message that names no cause.
 
-Adresa stroje a uživatel, pod kterým se přihlašuje, v repozitáři nejsou — jsou to
-secrets. Doména tajná není, běží na ní ta ukázka; nasazení ji ale nikde nemá
-zadrátovanou. Je to *public hostname* na tunelu, takže přidat druhou nebo tuhle přejmenovat
-je editace v dashboardu, ne commit.
+The machine's address and the user it logs in as are not in the repository — they are
+secrets. The domain is not secret, the demo runs on it; but the deployment has it
+hard-coded nowhere. It is a public hostname on the tunnel, so adding a second one or
+renaming this one is an edit in a dashboard, not a commit.
 
-Zbytek — tunel, Caddy, paměťový strop kontejneru — popisuje [DEPLOY.md](DEPLOY.md).
-Celý stack se vejde na malý server vedle jiné běžící aplikace.
+The rest — the tunnel, Caddy, the container's memory ceiling — is described in
+[DEPLOY.md](DEPLOY.md). The whole stack fits on a small server next to another running
+application.
 
 ---
 
-## Struktura
+## Layout
 
 ```
 pipeline/
-  sources/        jeden zdroj = jeden modul za společným rozhraním
-    res_bulk.py       první výběr z lokálního CSV
-    ares.py           4 GET endpointy; fetch() zvlášť, parse_*() čisté funkce
-    ares_notifications.py  denní dávky změn: kdo se pohnul
-    coords.py         adresní kód → souřadnice
-    website.py        IČO + název → doména firmy s důkazem
-    whois_cz.py       registr domén, vlastník
-    contacts.py       kanály k lidem, které už známe z rejstříku
-    mpsv.py           inzeráty, denní JSON + archiv přírůstků
-    dotace_eu.py      měsíční XLSX (čte se zipfile + re, ne openpyxl)
-    nen.py            veřejné zakázky
-    sbirka.py         obrat z účetní závěrky (jen karta)
-    certificates.py   ISO a spol. — vydává je třetí strana, tedy ověřitelný fakt
-  evidence/       JÁDRO — není to zdroj, je to kontrola všech ostatních
-    archive.py        SQLite + snímky adresované přes SHA-256
-    verify.py         citace v archivu? → fakt / úsudek / zahození
+  sources/        one source = one module behind a shared interface
+    res_bulk.py       the first cut, from a local CSV
+    ares.py           4 GET endpoints; fetch() apart, parse_*() pure functions
+    ares_notifications.py  daily change batches: who moved
+    coords.py         address code → coordinates
+    website.py        reg. no. + name → the company's domain, with proof
+    whois_cz.py       domain registry, owner
+    contacts.py       channels to people we already know from the register
+    mpsv.py           postings, daily JSON + an archive of increments
+    dotace_eu.py      monthly XLSX (read with zipfile + re, not openpyxl)
+    nen.py            public tenders
+    sbirka.py         turnover from the annual accounts (dossier only)
+    certificates.py   ISO and the like — issued by a third party, hence checkable
+  evidence/       THE CORE — not a source, the check on all the others
+    archive.py        SQLite + snapshots addressed by SHA-256
+    verify.py         quote in the archive? → fact / inference / discard
   signals/
-    now.py            datované události „proč teď", každý zdroj s vlastním oknem
-    mode.py           odvozené vlastnosti z textu
+    now.py            dated "why now" events, each source with its own window
+    mode.py           properties inferred from text
   llm/
-    client.py         jedny dveře pro všechny prompty; strukturovaný výstup, cache, cena
-    prompts/          jednotlivé úlohy pro model
+    client.py         one door for every prompt; structured output, cache, cost
+    prompts/          the individual jobs given to the model
   filters/
-    brief.py          profil z rozhraní jako filtr kandidáta
-    negative.py       insolvence, likvidace
+    brief.py          the profile from the interface, as a candidate filter
+    negative.py       insolvency, liquidation
   scoring/
-    select.py         podmínka výdeje + pořadí + kvóta na třídu důvodu
-    card.py           podklad, který čte člověk
-  run.py            jeden běh celý, plus preflight
-api/main.py         rozhraní a volání za ním
-web/                statika bez buildu, čtyři obrazovky
-  index.html          týden — na tomhle se aplikace otevírá
-  brief/              profil: obor, velikost, region
-  history/            co už jednou šlo ven, seskupené po bězích
-  card/               podklad jedné firmy
-  run-control.js      tlačítko běhu a stáří toho posledního
-.github/workflows/  deploy: push do main → běžící demo
-deploy/             druhá půlka nasazení: receive.sh, Caddyfile
-data/               celé v .gitignore (registry, archiv, snímky)
+    select.py         the delivery condition + ranking + a slot quota per class
+    card.py           the dossier a human reads
+  run.py            one whole run, plus the preflight
+api/main.py         the interface and the calls behind it
+web/                static, no build step, four screens
+  index.html          the week — what the app opens on
+  brief/              the profile: industry, size, region
+  history/            what has gone out, grouped by run
+  card/               one company's dossier
+  run-control.js      the run button and the age of the last one
+ARCHITECTURE.md     why it is built this way; code comments point here
+.github/workflows/  deploy: push to main → a running demo
+deploy/             the other half of deployment: receive.sh, Caddyfile
+data/               entirely in .gitignore (registers, archive, snapshots)
 ```
 
 ---
 
-## Přispívání
+## Contributing
 
-Nejužitečnější příspěvek je **nový zdroj**. Modulů bude vždycky víc než dnes, seznam je
-otevřený a přidání nového se nesmí dotknout ničeho kromě vlastního souboru.
+The most useful contribution is **a new source**. There will always be more modules than
+there are today, the list is open, and adding one must not touch anything outside its
+own file.
 
-1. **Zdroj nerozhoduje.** Jenom „dojde a přinese". Kdo se odevzdá, řeší `scoring/`.
-2. **HTTP odděleně od parsování.** `fetch()` chodí po síti, `parse_*()` jsou čisté
-   funkce nad payloadem — dají se ladit nad uloženým JSONem bez sítě.
-3. **Co se cituje, musí být v archivu.** Snímek se ukládá dřív, než z něj vznikne
-   tvrzení. Bez `snapshot_id` se tvrzení nevloží.
-4. **Vlastní CLI**: `python -m pipeline.sources.<jméno> <argument>` musí samo o sobě
-   vypsat něco smysluplného.
-5. **Prázdná odpověď není fakt.** Nedostupný zdroj vrací `None`, ne prázdný seznam.
-6. **Kód anglicky** (identifikátory, komentáře, docstringy). Komentáře vysvětlují
-   **proč** a krajní případy dat, ne co dělá řádek pod nimi.
-7. **Jen standardní knihovna**, dokud se závislost neobhájí. XLSX se tu čte přes
-   `zipfile` a `re` a je to v pořádku.
+1. **A source decides nothing.** It only "goes and fetches". Who gets handed over is
+   `scoring/`'s job.
+2. **HTTP apart from parsing.** `fetch()` goes to the network, `parse_*()` are pure
+   functions over a payload — debuggable against stored JSON with no network.
+3. **Whatever is quoted must be in the archive.** The snapshot is stored before a claim
+   is made from it. Without a `snapshot_id` a claim cannot be inserted.
+4. **Its own CLI**: `python -m pipeline.sources.<name> <argument>` must print something
+   meaningful on its own.
+5. **An empty answer is not a fact.** An unreachable source returns `None`, not an empty
+   list.
+6. **Code in English** (identifiers, comments, docstrings). Comments explain **why** and
+   the edge cases in the data, not what the line below them does.
+7. **Standard library only**, until a dependency earns its place. XLSX is read here with
+   `zipfile` and `re`, and that is fine.
 
-Stejně cenné jsou **měření**. Skripty `*_probe.py` v kořeni jsou přesně to: jednorázové
-otázky typu „kolik toho ten zdroj vlastně obsahuje". V repozitáři je i jejich výstup, ne
-jen kód — čísla v tabulkách výš se tak dají zkontrolovat, aniž by se probe pouštěl znovu
-proti datům, která se mezitím pohnula. Číslo, které něco z nich vyvrátí, je vítaný pull
-request.
-
----
-
-## Právní rámec
-
-**Profiluje se firma, ne člověk** — a není to formulace, je to rozdělení v datech.
-Fakta, signály, hodnocení a historie visí na **IČO**. Jméno člověka žije výhradně
-v bloku kontaktů: jméno, funkce, odkaz do rejstříku. K člověku se nevede žádné
-hodnocení, žádná poznámka, žádná historie a nespojují se u něj zdroje.
-
-Důvod: oprávněný zájem jako právní titul nepokrývá pokročilé profilování se slučováním
-údajů o člověku z různých zdrojů. Profil o právnické osobě tenhle problém nedělá.
-
-Proto se vyřazují fyzické osoby podnikající, adresy osobního tvaru se označují
-a nástroj **nic sám neodesílá** — správcem údajů zůstává ten, kdo ho používá.
-
-Zdroje jsou veřejné registry a veřejné weby, stahované v tempu, které servery unesou.
-Nic za přihlašovací stěnou.
+**Measurements** are just as valuable. The `*_probe.py` scripts in the root are exactly
+that: one-off questions of the kind "how much does this source actually contain". Their
+output is in the repository too, not just the code — so the numbers in the tables above
+can be checked without re-running a probe against data that has moved since. A number
+that refutes one of them is a welcome pull request.
 
 ---
 
-## Stav a co dál
+## Legal framing
 
-Celý týdenní běh funguje od profilu po kartu, běží v provozu a nasazuje se pushem do
-`main`. Hotový produkt to není: chybí zpětná vazba od uživatele, kalibrace pořadí
-a ověření kontaktů na celé bázi.
+**The company is profiled, not the person** — and that is not a phrasing, it is a split
+in the data. Facts, signals, assessments and history hang off the **registration
+number**. A person's name lives only in the contact block: name, function, link to the
+register. Nothing is scored, noted or historised about a human being, and no sources are
+joined on one.
 
-Nejbližší směry, seřazené podle toho, kolik toho odemknou:
+The reason: legitimate interest as a legal basis does not cover advanced profiling that
+joins data about a person across sources. A profile of a legal entity does not create
+that problem.
 
-- **další profily zadavatele veřejných zakázek** — teď uniká část nákupů
-- **referenční listy dodavatelů** jako negativní filtr: čerstvý případ znamená „už
-  koupili", starý naopak důvod k hovoru
-- **stav mezi běhy**: historie ukazuje, co už jednou šlo ven a kolikrát. Chybí druhá
-  půlka — co s firmou, která prošla vším, ale datovaný důvod zrovna neměla
-- **ověření kontaktů na celé bázi**, ne jen na tom, co prošlo ven
-- **jiná země**: nová sada modulů v `sources/`, zbytek by měl zůstat
+So sole traders are excluded, addresses in a personal form are flagged, and the tool
+**sends nothing on its own** — the data controller remains whoever uses it.
+
+The sources are public registers and public websites, fetched at a rate the servers can
+take. Nothing behind a login wall.
+
+---
+
+## Status and what is next
+
+The whole weekly run works from profile to dossier, runs in production, and deploys on a
+push to `main`. It is not a finished product: there is no user feedback, the ranking is
+uncalibrated, and contacts are unverified across the whole base.
+
+The nearest directions, ordered by how much they unlock:
+
+- **more contracting-authority profiles** — part of the buying is currently missed
+- **vendors' reference lists** as a negative filter: a fresh case means "already
+  bought", an old one is a reason to call
+- **state between runs**: the history shows what has gone out and how often. The other
+  half is missing — what to do with a company that passed everything but happened to
+  have no dated reason
+- **contact verification across the whole base**, not only on what went out
+- **another country**: a new set of modules in `sources/`, the rest should stay
 
 ---
 
 ## Licence
 
-[MIT](LICENSE). Kód se smí použít, upravit i prodat, jediná podmínka je nechat u něj
-uvedené autorství. Záruka žádná — u nástroje, který sbírá tvrzení z cizích webů, je to
-namístě říct nahlas: **ověřuje se, že věta na stránce byla, ne že je pravdivá.**
+[MIT](LICENSE). The code may be used, modified and sold; the only condition is keeping
+the attribution with it. No warranty — and for a tool that collects claims off other
+people's websites that is worth repeating out loud: **what is verified is that the
+sentence was on the page, not that it is true.**
 
-Licence se týká kódu. Data, se kterými pracuje, mají vlastní režim: veřejné registry
-mají své podmínky užití, weby firem taky a zpracování osobních údajů se řídí předchozí
-sekcí, ne touhle.
+The licence covers the code. The data it works with has its own regime: public registers
+have their terms of use, so do company websites, and personal data is governed by the
+section above rather than by this one.
