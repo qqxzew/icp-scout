@@ -11,6 +11,13 @@ nebo se zahodí a spočítá.
 Zatím jen pro Českou republiku — zdroje jsou české registry. Ostatní vrstvy (archiv,
 ověřování citací, okna signálů, výběr) na zemi nezávisí.
 
+**Živě běží na [icp-scout.fun](https://icp-scout.fun)** — poslední týden, filtry
+i historie toho, co už jednou šlo ven. Je to ta samá instance, na kterou míří deploy
+níž: co je v `main`, je za minutu tam.
+
+Proč je to postavené takhle, do hloubky a s odkazy z kódu:
+[ARCHITECTURE.md](ARCHITECTURE.md). *In English: [README.en.md](README.en.md).*
+
 ---
 
 ## Co to není
@@ -78,8 +85,16 @@ Tři mechaniky, které z toho tvaru plynou:
 - **Chybějící údaj se tiskne jako chybějící.** Kde není obrat, je napsáno proč
   („závěrka je sken bez textové vrstvy"), ne prázdno a ne odhad.
 
-Totéž je i v prohlížeči: `web/` má obrazovku pro zadání profilu, stránku týdne a kartu
-firmy.
+Totéž je i v prohlížeči. Rozhraní je statika bez buildu a má čtyři obrazovky. Aplikace
+se otevírá **týdnem** — pěti kartami v pořadí, ve kterém je výběr seřadil. Odtud vede
+odkaz na **podklad** jedné firmy, na **filtry** (profil) a na **historii**: co už jednou
+šlo ven, seskupené po bězích, i s tím, kolikrát ta firma šla ven celkem. Běh se spouští
+tlačítkem a stránka říká, jak je ten poslední starý.
+
+Historie je tam ze stejného důvodu jako počítadla na kartě: bez ní se nepozná, že se
+stejná firma nabízí potřetí. A firma, která mezitím z báze vypadla — rejstřík se mění,
+profil se mění —, zůstává v historii jako IČO bez jména. To je stav, ne chyba, a
+vynechat ji by znamenalo tvrdit, že se nikdy neodevzdala.
 
 ---
 
@@ -318,7 +333,7 @@ k opravení.
 | Osoba vs. obecný kanál | konkrétní člověk je dohledatelný zhruba u dvou pětin firem, u třetiny je jen podatelna a ústředna. Osobní adresa se **nedá dopočítat** ze jména, jen spárovat s napsanou — a když jsou v rejstříku dva lidé stejného jména, nespáruje se nic a karta napíše proč. |
 | Přesnost kontaktů na celé bázi | ověřená jen na vzorku, který se skutečně odevzdal. Nejslabší úroveň (jméno a číslo, které spolu jen sousedí na stránce) spolehlivá není a je jako taková označená. |
 | Kalibrace | není na čem ladit — ručně označených firem je pár desítek a rozdíl neukázaly. Pořadí je proto vysvětlitelné po řádcích, ne optimalizované. |
-| Zpětná vazba | žádná. Nástroj ví, co odevzdal, ne jak to dopadlo. |
+| Zpětná vazba | žádná. Nástroj ví, co odevzdal a kdy — historie to i ukazuje —, ale ne jak to dopadlo. Pořadí se proto nemá z čeho učit. |
 
 Jedna zákonitost, která se v projektu projevila pětkrát (historický záznam vydávaný za
 aktuální, chybějící deduplikace, `timeout`, který nehlídá celý přenos, slepené domény,
@@ -367,6 +382,13 @@ vyrobit řetěz prázdných souborů, které vypadají jako pravé. Ze stejného
 u velkých souborů nekontroluje jen „existuje": stažení, které umře v půlce, projde
 každým testem existence a pak tiše vrátí zkrácený seznam.
 
+Ten seznam předpokladů má vlastní historii, protože se mýlil na obě strany a pokaždé
+potichu. První čistá stavba doběhla, ohlásila úspěch — a nechala po sobě stroj, na
+kterém nešlo postavit rozhraní, protože v seznamu chyběl číselník oborů. Chybějící
+soubor se zakázkami zase neshodil vůbec nic: jen se v žádném týdnu nemohl objevit důvod
+třídy C a nikde nestálo proč. **Mlčení je horší selhání než pád**, takže se do seznamu
+dostalo obojí.
+
 Pak už jen:
 
 ```bash
@@ -378,9 +400,11 @@ python -m pipeline.run --window 14 --top 5
 Rozhraní — jeden proces obsluhuje statiku i `/api`:
 
 ```bash
-python -m pipeline.build_ui_data     # jednou, a při každé aktualizaci registru
 python -m uvicorn api.main:app --port 8000
 ```
+
+Data pro obrazovky staví `--bootstrap` sám; po aktualizaci registru se přepočítají
+`python -m pipeline.build_ui_data`.
 
 Každý zdroj má vlastní CLI a jde spustit samostatně, což je zároveň nejrychlejší
 způsob, jak se v kódu zorientovat:
@@ -391,9 +415,6 @@ python -m pipeline.evidence.archive --stats
 python -m pipeline.scoring.card <ičo> --no-fetch
 ```
 
-Nasazení v Dockeru za tunelem popisuje [DEPLOY.md](DEPLOY.md). Celý stack se vejde na
-malý server vedle jiné běžící aplikace.
-
 ### Profil se zadává v rozhraní, ne v kódu
 
 Profil je vstup, ne konstanta — proto může být repozitář veřejný a přitom použitelný na
@@ -402,6 +423,57 @@ cizí data. Uloží se do `web/icp.json`, což je **ten samý soubor**, který �
 obrazovky nezačínaly prázdné; přepíše se ve dvou krocích a další běh jede podle
 nového. Prázdné pole přitom neznamená „všechno" — znamená „nikdo se ještě nerozhodl"
 a použije se výchozí hodnota.
+
+---
+
+## Nasazení
+
+Push do `main` a za minutu běží demo na tom commitu.
+
+```
+push → GitHub Actions → git archive | ssh → receive.sh → rsync → build → restart → smoke test
+```
+
+Celý přenos je jedna roura: `git archive` na runneru rovnou do `deploy/receive.sh` přes
+ssh. Žádný registry, žádný checkout na serveru — **server tedy k tomuhle repozitáři
+nepotřebuje žádné přihlašovací údaje**, a to je celý důvod, proč to není `git pull` na
+druhé straně.
+
+Rozhodnutí, která za vysvětlení stojí:
+
+- **Deploy nikdy nespouští běh.** Týdenní běh trvá dlouho a utrácí za model, takže
+  zůstává rozhodnutím člověka, ne vedlejším efektem pushnutého kódu.
+- **A hlavně ho nesmí zabít.** Běh je podproces uvnitř kontejneru, takže restart by ho
+  poslal k zemi. Skript se proto nejdřív zeptá, jestli něco běží; když ano, odmítne
+  restartovat a skončí nenulově. Nic se neztrácí — soubory jsou nasyncované, image
+  postavená, stačí deploy zopakovat, až běh doběhne. Deploy, který se neprojevil, nesmí
+  svítit zeleně.
+- **Klíč umí jen tohle.** V `authorized_keys` má `command="…/receive.sh"`, takže s ním
+  nejde otevřít shell ani forwardovat port. Na stroji, kde běží i cizí web, je obyčejný
+  deploy klíč v secretu totéž co root shell pro každého, kdo si přečte log workflow.
+- **Co se nikdy nepřepisuje:** `.env`, `data/` a `web/icp.json`. První dvě v repozitáři
+  nejsou vůbec; třetí ano — proto je vyloučený jmenovitě, ne doufáním. Uložený profil je
+  vstup uživatele, ne build artefakt.
+- **Rsync s `--delete`,** aby soubor smazaný v gitu zmizel i na serveru. Dvakrát to
+  kouslo: skript rsyncuje sám sebe za běhu (bezpečné jen proto, že rsync píše dočasný
+  soubor a přejmenovává ho) a napoprvé se rovnou smazal, protože na serveru existoval
+  a v gitu ne. Co tenhle deploy potřebuje, musí být v gitu.
+- **Smoke test vede přes Caddy**, ne přes port aplikace — to je cesta, kterou jde
+  návštěvník. Kontroluje se i jedna karta, protože ten endpoint už jednou spadl tiše:
+  vracel 404 na každou firmu, zatímco všechny stránky dál odpovídaly 200. Nakonec se
+  totéž zeptá zvenčí přes veřejnou adresu, protože tunel nebo DNS můžou být dole, i když
+  jsou všechny kontejnery zdravé.
+- **`.gitattributes` vynucuje LF** u všeho, co server spouští. Píše se to na Windows,
+  nasazuje na Linux a přenos je `git archive` — takže co uloží git, to bash na druhé
+  straně provede, a skript s CRLF spadne na prvním řádku hláškou, která neřekne proč.
+
+Adresa stroje a uživatel, pod kterým se přihlašuje, v repozitáři nejsou — jsou to
+secrets. Doména tajná není, běží na ní ta ukázka; nasazení ji ale nikde nemá
+zadrátovanou. Je to *public hostname* na tunelu, takže přidat druhou nebo tuhle přejmenovat
+je editace v dashboardu, ne commit.
+
+Zbytek — tunel, Caddy, paměťový strop kontejneru — popisuje [DEPLOY.md](DEPLOY.md).
+Celý stack se vejde na malý server vedle jiné běžící aplikace.
 
 ---
 
@@ -439,7 +511,14 @@ pipeline/
     card.py           podklad, který čte člověk
   run.py            jeden běh celý, plus preflight
 api/main.py         rozhraní a volání za ním
-web/                statika bez buildu: profil, týden, karta
+web/                statika bez buildu, čtyři obrazovky
+  index.html          týden — na tomhle se aplikace otevírá
+  brief/              profil: obor, velikost, region
+  history/            co už jednou šlo ven, seskupené po bězích
+  card/               podklad jedné firmy
+  run-control.js      tlačítko běhu a stáří toho posledního
+.github/workflows/  deploy: push do main → běžící demo
+deploy/             druhá půlka nasazení: receive.sh, Caddyfile
 data/               celé v .gitignore (registry, archiv, snímky)
 ```
 
@@ -464,8 +543,10 @@ otevřený a přidání nového se nesmí dotknout ničeho kromě vlastního sou
    `zipfile` a `re` a je to v pořádku.
 
 Stejně cenné jsou **měření**. Skripty `*_probe.py` v kořeni jsou přesně to: jednorázové
-otázky typu „kolik toho ten zdroj vlastně obsahuje" s výstupem uloženým vedle. Číslo,
-které vyvrátí něco z tabulky výše, je vítaný pull request.
+otázky typu „kolik toho ten zdroj vlastně obsahuje". V repozitáři je i jejich výstup, ne
+jen kód — čísla v tabulkách výš se tak dají zkontrolovat, aniž by se probe pouštěl znovu
+proti datům, která se mezitím pohnula. Číslo, které něco z nich vyvrátí, je vítaný pull
+request.
 
 ---
 
@@ -489,18 +570,28 @@ Nic za přihlašovací stěnou.
 
 ## Stav a co dál
 
-Celý týdenní běh funguje od profilu po kartu a běží v provozu. Hotový produkt to není:
-chybí zpětná vazba od uživatele, kalibrace pořadí a ověření kontaktů na celé bázi.
+Celý týdenní běh funguje od profilu po kartu, běží v provozu a nasazuje se pushem do
+`main`. Hotový produkt to není: chybí zpětná vazba od uživatele, kalibrace pořadí
+a ověření kontaktů na celé bázi.
 
 Nejbližší směry, seřazené podle toho, kolik toho odemknou:
 
 - **další profily zadavatele veřejných zakázek** — teď uniká část nákupů
 - **referenční listy dodavatelů** jako negativní filtr: čerstvý případ znamená „už
   koupili", starý naopak důvod k hovoru
-- **stav mezi běhy**: co s firmou, která prošla, ale důvod neměla, a co s tou, která se
-  už jednou odevzdala
+- **stav mezi běhy**: historie ukazuje, co už jednou šlo ven a kolikrát. Chybí druhá
+  půlka — co s firmou, která prošla vším, ale datovaný důvod zrovna neměla
 - **ověření kontaktů na celé bázi**, ne jen na tom, co prošlo ven
 - **jiná země**: nová sada modulů v `sources/`, zbytek by měl zůstat
 
-**Licence zatím není zvolená**, takže do té doby platí výchozí stav autorského práva.
-Pokud vám vyhovuje konkrétní licence, napište to do issue — je to otevřené rozhodnutí.
+---
+
+## Licence
+
+[MIT](LICENSE). Kód se smí použít, upravit i prodat, jediná podmínka je nechat u něj
+uvedené autorství. Záruka žádná — u nástroje, který sbírá tvrzení z cizích webů, je to
+namístě říct nahlas: **ověřuje se, že věta na stránce byla, ne že je pravdivá.**
+
+Licence se týká kódu. Data, se kterými pracuje, mají vlastní režim: veřejné registry
+mají své podmínky užití, weby firem taky a zpracování osobních údajů se řídí předchozí
+sekcí, ne touhle.
