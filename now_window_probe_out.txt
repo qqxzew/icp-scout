@@ -1,0 +1,67 @@
+==============================================================================
+1. PUBLICATION LAG  (today = 2026-09-04)
+==============================================================================
+  ARES registry (events)     newest 2026-09-02  =   2 days old   (162612 dated records)
+  MPSV vacancies (posted)    newest 2026-09-01  =   3 days old   (40805 dated records)
+  EU subsidies (signed)      newest 2026-07-31  =  35 days old   (47661 dated records)
+  NEN tenders (published)    newest 2026-08-21  =  14 days old   (284 dated records)
+
+==============================================================================
+2. YIELD BY WINDOW  (pool = 4660 companies after brief + negatives)
+==============================================================================
+   window | registry  growth  subsidy  tender |   any
+      7d  |        8       0        0       0 |     8
+     14d  |       22       0        0       0 |    22
+     30d  |       41       3        0       0 |    44
+     60d  |       99       4        0       0 |   103
+     90d  |      167       7        0       0 |   174
+    120d  |      215      11        0       0 |   225
+    180d  |      312      16        0       0 |   326
+    365d  |      620      24        0       0 |   640
+    730d  |     1142      32        0       0 |  1168
+
+  note: subsidies use their own fixed window (SUBSIDY_WINDOW = 120d), tenders none at all (bid deadline decides)
+
+------------------------------------------------------------------------------
+2b. GROWTH: what the depth filter costs
+------------------------------------------------------------------------------
+     7d  management vacancy:    0 companies,    0 survive role_history_depth >= 6
+    14d  management vacancy:    1 companies,    0 survive role_history_depth >= 6
+    30d  management vacancy:   10 companies,    3 survive role_history_depth >= 6
+    60d  management vacancy:   18 companies,    4 survive role_history_depth >= 6
+    90d  management vacancy:   26 companies,    7 survive role_history_depth >= 6
+   180d  management vacancy:   59 companies,   16 survive role_history_depth >= 6
+
+==============================================================================
+3. THE REGISTRY SIGNAL ON ITS OWN
+==============================================================================
+     7d:    8 of 4660 companies ( 0.17 %)
+    30d:   41 of 4660 companies ( 0.88 %)
+    90d:  167 of 4660 companies ( 3.58 %)
+   365d:  620 of 4660 companies (13.30 %)
+
+  Ceiling: 620 companies fire a registry event in a year = 11.9 per week on average.
+
+  What the events are (365d window):
+    director_departed      548  (34.9 %)
+    director_joined        442  (28.2 %)
+    owner_departed         328  (20.9 %)
+    owner_joined           251  (16.0 %)
+
+    of 579 ownership events, 164 (28 %) have a COMPANY as the owner - a holding move, not a new person
+
+    of 442 directors ARRIVING, 130 (29 %) already appear elsewhere in the company's own register record
+
+  Does the week's registry hit survive the delivery gate?
+       7d:    8 hits -> proven site    4, channel    4, both    4   (headcount unrecorded: 0)
+      30d:   41 hits -> proven site   22, channel   22, both   22   (headcount unrecorded: 0)
+      90d:  167 hits -> proven site   74, channel   74, both   74   (headcount unrecorded: 0)
+
+  Registry rate by whether the register knows the headcount (30d):
+    headcount recorded       41 of  4660 ( 0.88 %)
+
+==============================================================================
+4. AGE OF WHAT WE CATCH (30-day window, per family)
+==============================================================================
+  growth        5 events, youngest 17d, median 22d, oldest 23d
+  registry     85 events, youngest 3d, median 13d, oldest 30d

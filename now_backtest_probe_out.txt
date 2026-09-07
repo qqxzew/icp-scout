@@ -1,0 +1,83 @@
+pool: 4660 companies
+
+==============================================================================
+1. BACKTEST: registry events per week, last 104 weeks
+==============================================================================
+  2468 of 4660 pool companies could be handed over at all (proven site + a channel)
+
+  companies with an event          median  15.0   mean  15.9   min   2   max  27   weeks with >= 5: 103/104
+  ...of them deliverable           median   8.0   mean   8.2   min   1   max  18   weeks with >= 5: 89/104
+
+  Most recent 12 weeks (week 0 = the last 7 days):
+    week -0    8 events ( 4 deliverable)  ########
+    week -1   14 events ( 9 deliverable)  ##############
+    week -2    9 events ( 4 deliverable)  #########
+    week -3    2 events ( 1 deliverable)  ##
+    week -4   12 events ( 6 deliverable)  ############
+    week -5    8 events ( 4 deliverable)  ########
+    week -6   21 events (12 deliverable)  #####################
+    week -7   24 events ( 9 deliverable)  ########################
+    week -8   11 events ( 6 deliverable)  ###########
+    week -9   25 events ( 7 deliverable)  #########################
+    week -10  21 events (11 deliverable)  #####################
+    week -11  14 events ( 5 deliverable)  ##############
+
+  Average events per week by calendar month:
+     1:  18.6
+     2:  15.8
+     3:  14.1
+     4:  15.2
+     5:  15.6
+     6:  17.0
+     7:  18.9
+     8:  12.9
+     9:  14.5
+    10:  15.7
+    11:  14.9
+    12:  16.9
+
+==============================================================================
+2. MPSV: how fresh is the current export, really
+==============================================================================
+  38142 vacancies in the file (all companies, not just ours)
+  postings by age in days:
+     0d     0  
+     1d     0  
+     2d     0  
+     3d     1  
+     4d     0  
+     5d     0  
+     6d     0  
+     7d     0  
+     8d     0  
+     9d   316  ###############
+    10d   327  ################
+    11d   591  #############################
+    12d     7  
+    13d     8  
+    14d   288  ##############
+    15d   329  ################
+    16d   458  ######################
+    17d   350  #################
+    18d   461  #######################
+    19d     8  
+    20d     9  
+    21d   262  #############
+    22d   307  ###############
+    23d   450  ######################
+    24d   370  ##################
+    25d   479  #######################
+    26d    11  
+    27d     3  
+    28d   208  ##########
+    29d   303  ###############
+    30d   407  ####################
+
+==============================================================================
+3. VACANCY SIGNAL: what is there, against what we take
+==============================================================================
+    7d: any vacancy    0 | >=3 vacancies    0 | >=10 % of headcount    0 | management ISCO    0  <- what we use
+   14d: any vacancy   68 | >=3 vacancies    1 | >=10 % of headcount    0 | management ISCO    1  <- what we use
+   30d: any vacancy  260 | >=3 vacancies   23 | >=10 % of headcount    4 | management ISCO   10  <- what we use
+   60d: any vacancy  502 | >=3 vacancies   70 | >=10 % of headcount   15 | management ISCO   18  <- what we use
+   90d: any vacancy  720 | >=3 vacancies  128 | >=10 % of headcount   28 | management ISCO   26  <- what we use
