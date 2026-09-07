@@ -135,13 +135,11 @@ function normalize(payload) {
  *  the ranking's own order. A company whose only facts are mode facts
  *  scores zero and therefore stays exactly where the ranking put it.
  *
- *  `rank` is captured before the sort because the two orders now differ
- *  and the card has to be able to say both. Hiding that would make the
- *  position on screen look like the position in the ranking, which is
- *  the one thing it no longer is.
+ *  Nothing is drawn about this. The card looks exactly as it did; only
+ *  the sequence changes, so the number in the corner is the position on
+ *  screen and no longer the position in the ranking.
  */
 function forReading(rows) {
-  rows.forEach((row, index) => { row.rank = index + 1; });
   return rows
     .map((row, index) => ({ row, index }))
     .sort((a, b) => (b.row.signal_facts - a.row.signal_facts) || (a.index - b.index))
@@ -281,9 +279,7 @@ function renderCard(item, index, total) {
   node.dataset.ico = item.ico;
   node.setAttribute("aria-label", `${index + 1}. ${item.name}`);
   find("rank").textContent = String(index + 1).padStart(2, "0");
-  find("sr-rank").textContent = isNumber(item.rank) && item.rank !== index + 1
-    ? `Karta ${index + 1} z ${total}, v žebříčku ${item.rank}.`
-    : `Pořadí ${index + 1} z ${total}.`;
+  find("sr-rank").textContent = `Pořadí ${index + 1} z ${total}.`;
 
   find("name").textContent = item.name;
   // IČO and seat on one line, separated the way the dossier separates the
@@ -340,29 +336,11 @@ function renderCard(item, index, total) {
     evidence.appendChild(el("b", null, item.facts_n));
     evidence.appendChild(document.createTextNode(
       " " + plural(item.facts_n, "ověřený fakt", "ověřené fakty", "ověřených faktů")));
-    // The number the deck is ordered by, printed whenever it is not the
-    // number next to it. Without this the order looks arbitrary: two
-    // cards both say "6 ověřených faktů" and sit three places apart,
-    // because one of the six is the production mode and the other's five
-    // are. Shown only when they differ - on a card with no mode claim
-    // the two counts are the same sentence twice.
-    if (isNumber(item.signal_facts) && item.signal_facts !== item.facts_n) {
-      evidence.appendChild(el("span", "wk-rank-note",
-        ` (${item.signal_facts} mimo režim výroby)`));
-    }
     if (isNumber(item.inferences_n)) {
       evidence.appendChild(document.createTextNode(" · "));
       evidence.appendChild(el("b", null, item.inferences_n));
       evidence.appendChild(document.createTextNode(
         " " + plural(item.inferences_n, "úsudek", "úsudky", "úsudků")));
-    }
-    // Said out loud whenever the two orders disagree. The deck is sorted
-    // by how much a card has to read; the ranking decided who is here at
-    // all, and a card that is second on screen and fourth in the ranking
-    // has to admit it rather than let the position imply otherwise.
-    if (isNumber(item.rank) && item.rank !== index + 1) {
-      evidence.appendChild(document.createTextNode(" · "));
-      evidence.appendChild(el("span", "wk-rank-note", `v žebříčku ${item.rank}.`));
     }
   }
 
