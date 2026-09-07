@@ -83,6 +83,36 @@ cd "$ROOT"
 say "building"
 docker compose build app
 
+# A weekly run is a subprocess INSIDE the app container - POST /api/run
+# spawns it there - so recreating the container kills it. That is hours
+# of work and real money spent on the model, thrown away by somebody
+# pushing a typo fix. So the deploy asks first.
+#
+# Nothing is lost by stopping here. The files are already synced and the
+# image is already built, so the static half of the interface is live and
+# the new Python is one restart away; re-running this workflow once the
+# run finishes picks it up. Exiting non-zero on purpose: a deploy that
+# did not take effect must not look green.
+say "checking for a run in progress"
+progress=$(docker compose exec -T app python - <<'PY' 2>/dev/null || echo unknown
+import json, urllib.request
+try:
+	state = json.loads(urllib.request.urlopen("http://127.0.0.1:8000/api/run", timeout=10).read())
+	print("yes" if state.get("running") else "no")
+except Exception:
+	# A container that cannot answer is not a container running a
+	# pipeline; the restart below is what will fix it.
+	print("unknown")
+PY
+)
+say "run in progress: $progress"
+
+if [ "$progress" = "yes" ]; then
+	say "REFUSING to restart - a pipeline run is going"
+	say "files are synced and the image is built; re-run this deploy when it finishes"
+	exit 2
+fi
+
 say "restarting"
 docker compose up -d app
 
