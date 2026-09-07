@@ -995,13 +995,25 @@ def catalogue_row(row, card):
     second, shorter description of the same event. Only companies that
     were handed over reach this, and every one of them has a card.
     """
+    from pipeline.scoring.select import is_mode
+
     card = card or {}
     events = card.get("why_now") or []
 
     # Counted off the card when there is one, so the catalogue's tally and
     # the dossier's footer cannot disagree about the same company.
+    #
+    # signal_facts is the same tally with the production mode left out,
+    # and it is what the week is ordered by for reading - see
+    # select.is_mode() for why that kind does not count. Computed here
+    # from the card's own facts rather than carried over from the row, so
+    # it stays the number the card would show if somebody counted its
+    # lines by hand.
     evidence = card.get("evidence")
-    verified = ({"facts": len(evidence["facts"]), "inferences": len(evidence["inferences"])}
+    verified = ({"facts": len(evidence["facts"]),
+                 "inferences": len(evidence["inferences"]),
+                 "signal_facts": sum(1 for fact in evidence["facts"]
+                                     if not is_mode(fact.get("kind")))}
                 if evidence else (row.get("pain") or {}).get("verified") or {})
 
     turnover = card.get("turnover") or {}

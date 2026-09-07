@@ -508,7 +508,12 @@
   padding-top: 14px;
 }
 
-.wk-foot-line .wk-open { margin-left: auto; }
+.wk-foot-line /* "v žebříčku 4." on the footer line, only drawn when the reading order
+   and the ranking disagree. Dimmed: it is a caveat about the position,
+   not a finding about the company. */
+.wk-rank-note { color: var(--ink-faint); }
+
+.wk-open { margin-left: auto; }
 
 .wk-evidence {
   flex: 1 1 100%;

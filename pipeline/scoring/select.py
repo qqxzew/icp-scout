@@ -398,7 +398,34 @@ def verified_richness(archive, ico):
     facts = sum(1 for row in kept if row["state"] == "fact")
     inferences = sum(1 for row in kept if row["state"] == "inference")
     return {"facts": facts, "inferences": inferences,
+            "signal_facts": sum(1 for row in kept
+                                if row["state"] == "fact" and not is_mode(row["kind"])),
             "discounted": len(rows) - len(kept)}
+
+
+def is_mode(kind):
+    """Is this claim only the production mode?
+
+    Counted everywhere else, and deliberately not counted where the week
+    is ordered for reading. Two reasons, both already written down:
+
+    It is the largest kind by a distance - 57 of the 123 claims in the
+    archive at the time of writing, against 24 for all three pain signs
+    together - because every page that mentions making things to order
+    files one, so it measures how many pages a company has rather than
+    how much is known about it.
+
+    And it is the least trustworthy thing on the card. Checked by hand on
+    three companies, none gave a clean answer: one says "na zakázku" and
+    keeps a catalogue, one says "kusová i sériová" on a single page, the
+    third says nothing at all. A count led by that is a count led by
+    marketing copy.
+
+    A company whose only facts are mode facts therefore sorts as zero and
+    keeps the ranking's own order, which is the honest outcome: nothing
+    was learned about it that the ranking did not already weigh.
+    """
+    return str(kind).startswith("production_mode")
 
 
 def pain_score(website, contact, vacancy, now_event_count, verified=None):
