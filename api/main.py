@@ -50,15 +50,64 @@ ARCHIVE = Archive(
 	snapshot_dir=PROJECT_ROOT / "data" / "snapshots",
 )
 
-# Loaded once at startup rather than per request - the same call
+# Held between requests rather than re-read on each one - the same call
 # select.py's own CLI makes, and re-reading a 9800-row candidate file and
 # two jsonl caches on every card click would make the one interactive
 # screen in this prototype the slow one. Turnover is the exception: its
 # cache is read fresh per request (cheap, one small file) since card.py
 # itself appends to it as new companies get looked up.
-COMPANIES = {c["ico"]: c for c in load_companies(ARES_CANDIDATES)}
-WEBSITES_CACHE = load_jsonl(WEBSITES)
-CONTACTS_CACHE = load_jsonl(CONTACTS)
+class Caches:
+	"""The three files a card is built from, re-read when a run rewrites them.
+
+	These used to be three module-level dicts filled once at import, which
+	is correct for exactly as long as nobody runs the pipeline. A run
+	rewrites all three, and from that moment the server answered every
+	card click with "IČO není v seznamu kandidátů" until somebody
+	restarted it - measured on the clean rebuild, where all five delivered
+	companies 404'd because the process still held the candidate list as
+	it looked eight hours earlier.
+
+	Reloading on a timer would either be too slow to help or reload for
+	nothing; reloading at the end of a run would miss runs started from
+	the terminal, which count just as much. The file's own mtime is the
+	one signal that is true whoever wrote it.
+	"""
+
+	SOURCES = (ARES_CANDIDATES, WEBSITES, CONTACTS)
+
+	def __init__(self):
+		self.lock = threading.Lock()
+		self.stamp = None
+		self.companies = {}
+		self.websites = {}
+		self.contacts = {}
+
+	@staticmethod
+	def stamp_of(paths):
+		"""Size next to mtime: a rewrite inside one mtime tick still moves it."""
+		marks = []
+		for path in paths:
+			try:
+				info = Path(path).stat()
+				marks.append((info.st_mtime_ns, info.st_size))
+			except OSError:
+				# Missing is a state, not an error - the file may not be
+				# built yet, and it will come back on its own.
+				marks.append(None)
+		return tuple(marks)
+
+	def current(self):
+		stamp = self.stamp_of(self.SOURCES)
+		with self.lock:
+			if stamp != self.stamp:
+				self.companies = {c["ico"]: c for c in load_companies(ARES_CANDIDATES)}
+				self.websites = load_jsonl(WEBSITES)
+				self.contacts = load_jsonl(CONTACTS)
+				self.stamp = stamp
+			return self.companies, self.websites, self.contacts
+
+
+CACHES = Caches()
 
 app = FastAPI()
 
@@ -309,9 +358,10 @@ def get_card(ico: str):
 	which fills the same cache this reads.
 	"""
 	ico = ico.strip().zfill(8)
-	if ico not in COMPANIES:
+	companies, websites, contacts = CACHES.current()
+	if ico not in companies:
 		raise HTTPException(status_code=404, detail="IČO není v seznamu kandidátů")
-	card = build_card(ico, ARCHIVE, COMPANIES, WEBSITES_CACHE, CONTACTS_CACHE,
+	card = build_card(ico, ARCHIVE, companies, websites, contacts,
 	                   turnover_cache=load_turnover_cache(), fetch_turnover=False)
 	return card_for_web(card)
 
