@@ -1,13 +1,8 @@
 # icp-scout
 
-[![běží na icp-scout.fun](https://img.shields.io/badge/live-icp--scout.fun-38BDF8?style=for-the-badge)](https://icp-scout.fun)
-[![English](https://img.shields.io/badge/English-012169?style=for-the-badge)](README.md)
-[![MIT](https://img.shields.io/badge/MIT-3DA639?style=for-the-badge)](LICENSE)
-
 ![Python 3.14](https://img.shields.io/badge/Python%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![OpenAI API](https://img.shields.io/badge/OpenAI%20API-412991?style=for-the-badge)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
 
