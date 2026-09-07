@@ -1,0 +1,89 @@
+# Push to main, and the demo box is running that commit a minute later.
+#
+# The whole transfer is one pipe: git archive on the runner, straight
+# into deploy/receive.sh over ssh. No rsync daemon, no registry, no
+# checkout on the server - the server never needs credentials for this
+# repository, which is the reason it is shaped this way rather than as a
+# `git pull` on the far end.
+#
+# What is deliberately NOT here: running the pipeline. A weekly run takes
+# hours and spends money on the model, so it stays a decision somebody
+# makes, not a side effect of pushing code.
+#
+# Host and user are secrets, not literals. Not because they are sensitive
+# - the box is reachable by name - but because this repository is meant
+# to be split into a public copy (see CLAUDE.md), and the deployment
+# target is the one thing in it that should not travel.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one halfway: the far end is in
+# the middle of rsyncing a live directory and restarting a container, and
+# a killed ssh session there leaves the box in a state nobody chose.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authorise against the box
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned, not accepted on sight. StrictHostKeyChecking=no would
+          # make every deploy trust whatever answers on port 22.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ship this commit and restart
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -o pipefail
+          # HEAD, not the working tree: the runner has no working tree
+          # worth shipping, and an archive built from the commit is
+          # exactly what was reviewed. receive.sh reports its own
+          # progress, so its output is this job's log.
+          git archive --format=tar.gz HEAD \
+            | ssh -i ~/.ssh/deploy_key \
+                  -o IdentitiesOnly=yes \
+                  -o BatchMode=yes \
+                  -o ConnectTimeout=20 \
+                  "$SSH_USER@$SSH_HOST" \
+                  /opt/icp-scout/deploy/receive.sh
+
+      # The step above already smoke-tests through Caddy from inside the
+      # docker network. This asks the same question from outside, over the
+      # real domain, because the two can disagree: the tunnel or the DNS
+      # can be down while every container is healthy.
+      - name: Check the public URL
+        env:
+          PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
+        run: |
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "PUBLIC_URL not set - skipping the outside check"
+            exit 0
+          fi
+          failed=0
+          for path in / /brief/ /history/ /api/results /api/history; do
+            code=$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "$PUBLIC_URL$path" || echo 000)
+            printf '  %-16s %s\n' "$path" "$code"
+            [ "$code" = "200" ] || failed=1
+          done
+          exit $failed

@@ -1,0 +1,11 @@
+# The repository is written on Windows and deployed to Linux, and the
+# deploy travels as `git archive`, so whatever git stores is what bash on
+# the far end executes. A shell script checked out with CRLF fails there
+# on its first line with a message about '\r' that names no useful cause.
+#
+# Only the files that are executed or parsed by the server are pinned.
+# Everything else keeps git's own default, so nobody's editor fights this.
+*.sh    text eol=lf
+Dockerfile text eol=lf
+*.yml   text eol=lf
+Caddyfile text eol=lf
