@@ -20,7 +20,10 @@
 // companies, which on a screen whose whole subject is "can this be
 // trusted" is the worst possible failure. An empty week now says so.
 const RESULTS = "/api/results";
-const DOSSIER = "../card/index.html?ico=";
+// Absolute, not relative: this script draws the page served at "/" since
+// the week became the landing screen, and "../card/" from there resolves
+// above the site root.
+const DOSSIER = "/card/index.html?ico=";
 const MAX_CHIPS = 4;
 
 // NO VOCABULARY LIVES HERE. Every Czech word on a card - the class of the
@@ -620,3 +623,36 @@ function describe(data) {
   setActive(0);
   watch();
 })();
+
+/* the top bar ------------------------------------------------------------ */
+
+// The run button in the navigation, driven by the same module the brief
+// screen uses. Mounted here rather than inline in the page because this
+// file is what the week is made of; run-control.js only needs to be told
+// which nodes to write into and what to do when a run ends.
+//
+// onFinished reloads instead of navigating: the week already is this
+// page, and re-reading /api/results is the whole difference between the
+// week that was on screen and the one the run just wrote.
+mountRunControl({
+  button: document.getElementById("wk-run"),
+  title: document.getElementById("wk-run-title"),
+  sub: document.getElementById("wk-run-sub"),
+  since: document.getElementById("since"),
+  sinceValue: document.getElementById("since-value"),
+  onFinished: () => { window.location.reload(); },
+}) && fetch("/api/run")
+  .then((r) => r.json())
+  // Drawn on load so "Poslední běh před 3 h" is there before anybody
+  // presses anything, and so a reload landing on a run already in
+  // progress picks its polling back up.
+  .then((state) => {
+    const button = document.getElementById("wk-run");
+    if (state.running) button.click();
+    const since = document.getElementById("since");
+    const value = document.getElementById("since-value");
+    if (!state.last_run || !state.last_run.generated_at || !since || !value) return;
+    since.hidden = false;
+    value.textContent = new Date(state.last_run.generated_at).toLocaleString("cs-CZ");
+  })
+  .catch((error) => console.error("Could not read the run state", error));

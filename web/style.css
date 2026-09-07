@@ -176,6 +176,50 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* home ---------------------------------------------------------------- */
+
+/* The way back to the week. The brief used to be the front page and had
+   nowhere to go; now it is the second screen and this is how it is left.
+   Same shape as .wk-pill in week/week.css - two files because the two
+   pages load different stylesheets, and one shared rule for four
+   declarations would mean loading the week's CSS here for nothing. */
+.home {
+  position: fixed;
+  top: 20px;
+  left: 22px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-decoration: none;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+
+.home svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home:hover { color: var(--ink); border-color: #2e2e2e; }
+.home:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 2px; }
+
+/* The panel is centred and can reach the top on a short screen, so the
+   link stops floating over it and rides with the content instead. */
+@media (max-width: 760px) {
+  .home { position: static; display: inline-flex; margin: 0 0 14px 2px; }
+}
+
 /* since --------------------------------------------------------------- */
 
 .since {

@@ -19,25 +19,39 @@
 /* Fixed rather than in .wk-head: the header carries the week's own two
    lines and the view switch, and a back link belongs to the page, not to
    the week. Small and quiet - it is an exit, not an offer. */
-.wk-home {
+/* The whole navigation of the prototype, since the week became the page
+   the app opens on. Pills rather than a bar with a background: they sit
+   over the deck's own top edge, and a filled strip there read as a header
+   the five cards belonged to. */
+.wk-bar {
   position: fixed;
   top: 20px;
   left: 22px;
   z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wk-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 11px 6px 8px;
+  gap: 6px;
+  padding: 6px 12px 6px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink-faint);
+  font: inherit;
   font-size: 11px;
   text-decoration: none;
-  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+  cursor: pointer;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease),
+              background-color 160ms var(--ease);
 }
 
-.wk-home svg {
+.wk-pill svg {
   width: 13px;
   height: 13px;
   fill: none;
@@ -47,13 +61,57 @@
   stroke-linejoin: round;
 }
 
-.wk-home:hover { color: var(--ink); border-color: #2e2e2e; }
-.wk-home:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 2px; }
+.wk-pill:hover { color: var(--ink); border-color: #2e2e2e; }
+.wk-pill:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 2px; }
+
+/* The one action on the page that cannot be undone by going back, so it
+   is the one that is not grey. */
+.wk-pill--run {
+  position: relative;
+  color: var(--ink);
+  border-color: #2e2e2e;
+}
+
+.wk-pill--run:hover { background: var(--surface-hi); }
+
+.wk-pill--run .wk-run-glyph { fill: currentColor; stroke: none; }
+
+/* The glyph gives way to the spinner in place, so the pill does not
+   change width when a run starts and shift the two links beside it. */
+.wk-pill--run[data-busy="1"] .wk-run-glyph { opacity: 0; }
+.wk-pill--run[data-busy="1"] .wk-run-spinner { opacity: 1; }
+.wk-pill--run[data-failed="1"] { border-color: var(--warn); color: var(--warn); }
+
+.wk-run-glyph { transition: opacity 160ms var(--ease); }
+
+.wk-run-spinner {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid rgb(242 240 236 / 25%);
+  border-top-color: var(--ink);
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+  /* Declared in style.css and reused by name, like .wk-card reuses
+     result-in. */
+  animation: spin 700ms linear infinite;
+}
+
+/* "Probíhá 4 min 12 s" and the failure line. Empty most of the time, so
+   it takes no room until run-control.js writes into it. */
+.wk-run-note {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.wk-run-note:empty { display: none; }
 
 /* The deck's own navigation sits at the left edge on a narrow screen, so
-   the link stops floating over it and rides with the content instead. */
+   the bar stops floating over it and rides with the content instead. */
 @media (max-width: 900px) {
-  .wk-home { position: static; margin: 0 0 16px 4px; }
+  .wk-bar { position: static; margin: 0 0 16px 4px; }
 }
 
 .wk {

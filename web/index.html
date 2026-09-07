@@ -7,8 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../style.css">
-<link rel="stylesheet" href="week.css?v=6">
+<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="week/week.css?v=7">
 </head>
 <body>
 
@@ -22,13 +22,51 @@
   <symbol id="wk-i-sub" viewBox="0 0 12 12"><path d="M3 1V6.5C3 7.6 3.9 8 4.8 8H8M8 8L6.2 6.2M8 8L6.2 9.8"/></symbol>
 </svg>
 
-<!-- Fixed, small, out of the reading path: the week is the destination,
-     and going back to the brief is the rare second errand, not the first
-     thing to offer somebody who just arrived here from a finished run. -->
-<a class="wk-home" href="/" aria-label="Zpět na zadání">
-  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>
-  <span>Zadání</span>
-</a>
+<!-- The week is the landing screen, so this is the whole navigation of the
+     prototype. It used to be one link pointing the other way: the brief
+     was the front page and nothing on it led here, so a finished week was
+     reachable only by knowing the URL - somebody looking at the app after
+     a run had no way to find out a selection existed at all.
+     Small and out of the reading path all the same. The five companies
+     are the destination; editing the brief and spending eight hours on a
+     new run are the rare second errands. -->
+<nav class="wk-bar" aria-label="Navigace">
+  <a class="wk-pill" href="/brief/">
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M3 6.5h5M12 6.5h5M3 13.5h9M16 13.5h1"/>
+      <circle cx="10" cy="6.5" r="1.9"/>
+      <circle cx="14" cy="13.5" r="1.9"/>
+    </svg>
+    <span>Filtry</span>
+  </a>
+
+  <a class="wk-pill" href="/history/">
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="10" cy="10" r="6.5"/>
+      <path d="M10 6.2V10l2.6 1.6"/>
+    </svg>
+    <span>Historie</span>
+  </a>
+
+  <!-- A button, not a link: it starts something that takes hours and
+       cannot be undone by going back. Its two labels are read off the
+       page by run-control.js, so the wording lives here and not in the
+       shared module. -->
+  <button class="wk-pill wk-pill--run" id="wk-run" type="button">
+    <svg class="wk-run-glyph" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4.5l8 5.5-8 5.5V4.5z"/></svg>
+    <span class="wk-run-spinner" aria-hidden="true"></span>
+    <span id="wk-run-title">Spustit nový běh</span>
+  </button>
+
+  <span class="wk-run-note" id="wk-run-sub"></span>
+</nav>
+
+<!-- Same corner and same wording as the brief screen: it belongs to the
+     session rather than to anything on the page. -->
+<div class="since" id="since" hidden>
+  <span class="since-label">Poslední běh</span>
+  <span class="since-value" id="since-value">—</span>
+</div>
 
 <main class="wk-stage">
 <div class="wk" data-view="deck">
@@ -110,6 +148,7 @@
   </article>
 </template>
 
-<script src="week.js?v=7"></script>
+<script src="run-control.js?v=1"></script>
+<script src="week/week.js?v=8"></script>
 </body>
 </html>
